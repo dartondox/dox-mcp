@@ -1,7 +1,9 @@
 import 'dart:async';
 
 import 'package:dox_core/dox_core.dart';
-// RequestBody and BodyKind are not exported by dox_core.
+// RequestBody and BodyKind: dox_core 3.1.0 does not export them yet (the
+// next release does). Drop this import once the app needs that release.
+// ignore: unnecessary_import
 import 'package:dox_core/http/request/http_request_body.dart';
 import 'package:dox_mcp/src/json_rpc.dart';
 import 'package:dox_mcp/src/mcp_sessions.dart';
