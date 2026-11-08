@@ -1,0 +1,7 @@
+.dart_tool/
+.DS_Store
+pubspec.lock
+pubspec_overrides.yaml
+build/
+# the docs site page, not part of the package
+docs/
