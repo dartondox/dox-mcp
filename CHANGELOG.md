@@ -1,4 +1,4 @@
-## Unreleased
+## 3.1.2
 
 - New: `McpDtoTool<T>`, a tool that takes a `@Dto` class as its input. `inputSchema` comes from the DTO, so `@Describe` texts show up. The arguments are checked like a DTO in a controller (async rules too), and `handle` gets the typed object. Bad arguments are a tool result with `isError: true` that lists each problem.
 - New: `McpToolResult.invalidArguments(tool, issues)`, the error result for bad arguments.
