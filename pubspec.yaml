@@ -1,6 +1,6 @@
 name: dox_mcp
 description: "Model Context Protocol (MCP) server for the Dox framework: tools over Streamable HTTP, with signed sessions that work on every isolate."
-version: 3.1.0
+version: 3.1.1
 repository: https://github.com/dartondox/dox-mcp
 homepage: https://dartondox.dev
 
