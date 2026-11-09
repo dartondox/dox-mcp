@@ -237,6 +237,8 @@ class _FunctionTool extends McpTool {
 /// Bad arguments give an error result with each problem, not a JSON-RPC
 /// error, so the model can fix them and try again.
 ///
+/// Route path params are not passed. MCP has none.
+///
 /// ```
 /// class CreateCategory extends McpDtoTool<NewCategory> {
 ///   @override
@@ -253,7 +255,7 @@ class _FunctionTool extends McpTool {
 ///     NewCategory input,
 ///     McpContext context,
 ///   ) async {
-///     Category category = await Category.create(input.toMap());
+///     Category category = await Category.create(dto.toMap(input));
 ///     return McpToolResult.json(category.toJson());
 ///   }
 /// }
@@ -262,7 +264,7 @@ abstract class McpDtoTool<T> extends McpTool {
   const McpDtoTool();
 
   /// The DTO schema, like `NewCategory.schema` or
-  /// `$NewCategory`.
+  /// `$NewCategoryDto`.
   DtoSchema<T> get dto;
 
   /// Run the tool with the checked DTO.
