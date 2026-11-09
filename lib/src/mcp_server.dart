@@ -299,15 +299,7 @@ class McpServer {
     Object? args = params['arguments'] ?? <String, dynamic>{};
     ParseResult<Map<String, dynamic>> parsed = tool.input.safeParse(args);
     if (!parsed.success) {
-      String problems = <String>[
-        for (ValidationIssue issue in parsed.issues)
-          issue.dottedPath.isEmpty
-              ? issue.message
-              : '${issue.dottedPath}: ${issue.message}',
-      ].join('; ');
-      return McpToolResult.error(
-        'Input validation error: Invalid arguments for tool $toolName: $problems',
-      ).toJson();
+      return McpToolResult.invalidArguments(toolName, parsed.issues).toJson();
     }
 
     try {

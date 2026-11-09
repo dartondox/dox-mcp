@@ -72,6 +72,23 @@ class McpToolResult {
     return McpToolResult(<McpContent>[McpContent.text(text)], isError: true);
   }
 
+  /// The error result for bad arguments: one line with each problem as
+  /// `field: message`, so the model can fix the call and try again.
+  factory McpToolResult.invalidArguments(
+    String tool,
+    List<ValidationIssue> issues,
+  ) {
+    String problems = <String>[
+      for (ValidationIssue issue in issues)
+        issue.dottedPath.isEmpty
+            ? issue.message
+            : '${issue.dottedPath}: ${issue.message}',
+    ].join('; ');
+    return McpToolResult.error(
+      'Input validation error: Invalid arguments for tool $tool: $problems',
+    );
+  }
+
   /// [value] as JSON text, and as `structuredContent` when it is a map.
   factory McpToolResult.json(Object? value) {
     return McpToolResult(<McpContent>[
@@ -209,5 +226,81 @@ class _FunctionTool extends McpTool {
   @override
   FutureOr<McpToolResult> call(Map<String, dynamic> args, McpContext context) {
     return handler(args, context);
+  }
+}
+
+/// An MCP tool that takes a `@Dto` class as its input.
+///
+/// The `inputSchema` comes from the DTO, so `@Describe`, `@Length` and the
+/// other annotations show up for the model. The arguments are checked the
+/// same way as a DTO in a controller, async rules like `@Unique` too.
+/// Bad arguments give an error result with each problem, not a JSON-RPC
+/// error, so the model can fix them and try again.
+///
+/// ```
+/// class CreateCategory extends McpDtoTool<NewCategory> {
+///   @override
+///   String get name => 'create_category';
+///
+///   @override
+///   String get description => 'Add a category.';
+///
+///   @override
+///   DtoSchema<NewCategory> get dto => NewCategory.schema;
+///
+///   @override
+///   Future<McpToolResult> handle(
+///     NewCategory input,
+///     McpContext context,
+///   ) async {
+///     Category category = await Category.create(input.toMap());
+///     return McpToolResult.json(category.toJson());
+///   }
+/// }
+/// ```
+abstract class McpDtoTool<T> extends McpTool {
+  const McpDtoTool();
+
+  /// The DTO schema, like `NewCategory.schema` or
+  /// `$NewCategory`.
+  DtoSchema<T> get dto;
+
+  /// Run the tool with the checked DTO.
+  FutureOr<McpToolResult> handle(T input, McpContext context);
+
+  /// Keeps every key. [call] checks them with [dto].
+  @override
+  ObjectSchema get input => v.object(<String, Schema<Object?>>{}).passthrough();
+
+  @override
+  Future<McpToolResult> call(
+    Map<String, dynamic> args,
+    McpContext context,
+  ) async {
+    // the same steps as RequestValidator.validateDto for a JSON body
+    ParseResult<T> result = await dto.run(
+      args,
+      DtoState(
+        root: args,
+        resolver: Dox().messages,
+        locale: context.request.locale,
+      ),
+    );
+    if (!result.success) {
+      return McpToolResult.invalidArguments(name, result.issues);
+    }
+    return handle(result.value as T, context);
+  }
+
+  @override
+  Map<String, dynamic> toJson() {
+    Map<String, dynamic> json = super.toJson();
+    Map<String, dynamic> schema = <String, dynamic>{
+      ...dto.toJsonSchema(),
+      'type': 'object',
+    };
+    schema.putIfAbsent('properties', () => <String, dynamic>{});
+    json['inputSchema'] = schema;
+    return json;
   }
 }
