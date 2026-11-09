@@ -4,10 +4,6 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show Digest, Hmac, sha256;
 import 'package:dox_core/dox_core.dart';
-// RequestBody and BodyKind: dox_core 3.1.0 does not export them yet (the
-// next release does). Drop this import once the app needs that release.
-// ignore: unnecessary_import
-import 'package:dox_core/http/request/http_request_body.dart';
 
 /// An OAuth error. The client gets `{ error, error_description }`.
 class McpOAuthException implements Exception {
