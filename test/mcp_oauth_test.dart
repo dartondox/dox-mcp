@@ -35,6 +35,14 @@ final McpOAuth oauth = McpOAuth(
   resourceName: 'Test',
 );
 
+/// The same server, but a code is good for 1 second.
+final McpOAuth shortOAuth = McpOAuth(
+  issuer: 'https://app.test/',
+  tokens: tokens,
+  key: utf8.encode('o' * 32),
+  codeTtl: const Duration(seconds: 1),
+);
+
 final McpServer mcp = McpServer(
   name: 'test-server',
   version: '1.0.0',
@@ -48,6 +56,7 @@ class OAuthRouter extends Router {
     Route.match(<String>['GET', 'POST', 'DELETE'], '/mcp', handleMcp);
     // the app's own "yes" endpoint; the user comes from the app's login
     Route.post('/approve', approve);
+    Route.post('/short/token', shortOAuth.token);
   }
 
   Future<DoxResponse> handleMcp(DoxRequest req) async {
@@ -141,9 +150,10 @@ void main() {
     String code, {
     String? verifierOverride,
     String? redirectOverride,
+    String path = '/oauth/token',
   }) {
     return client.post(
-      '/oauth/token',
+      path,
       headers: <String, String>{
         'content-type': 'application/x-www-form-urlencoded',
       },
@@ -243,6 +253,26 @@ void main() {
     });
   });
 
+  group('register limits', () {
+    test('a too long redirect address is refused', () async {
+      String base = 'https://ok.test/';
+      String tooLong =
+          base + 'a' * (McpOAuth.maxRedirectUriLength - base.length + 1);
+      TestResponse res = await client.post(
+        '/oauth/register',
+        headers: json,
+        body: jsonEncode(<String, dynamic>{
+          'redirect_uris': <String>[tooLong],
+        }),
+      );
+      res.expectStatus(400);
+      expect(res.json['error'], 'invalid_redirect_uri');
+
+      String justRight = tooLong.substring(0, tooLong.length - 1);
+      await registerClient(justRight);
+    });
+  });
+
   group('sign-in', () {
     test('code -> token -> MCP, and the code works once', () async {
       String clientId = await registerClient();
@@ -302,6 +332,50 @@ void main() {
       expect(otherRedirect.json['error'], 'invalid_grant');
     });
 
+    test('a bad verifier gives invalid_request, not a crash', () async {
+      String clientId = await registerClient();
+      String code = await codeFor(clientId);
+      for (String bad in <String>[
+        'ü' * 50, // not ASCII
+        'v' * 42, // too short
+        'v' * 129, // too long
+        '${'v' * 49}+', // not an allowed character
+      ]) {
+        TestResponse res = await swap(clientId, code, verifierOverride: bad);
+        res.expectStatus(400);
+        expect(res.json['error'], 'invalid_request');
+      }
+      // a bad verifier does not take the code
+      (await swap(clientId, code)).expectStatus(200);
+    });
+
+    test('an expired code is refused', () async {
+      String clientId = await registerClient();
+      String url = await shortOAuth.approve(
+        subject: 'ann',
+        clientId: clientId,
+        redirectUri: redirect,
+        codeChallenge: challengeOf(verifier),
+      );
+      String code = Uri.parse(url).queryParameters['code']!;
+      await Future<void>.delayed(const Duration(milliseconds: 2100));
+      TestResponse res = await swap(clientId, code, path: '/short/token');
+      res.expectStatus(400);
+      expect(res.json['error'], 'invalid_grant');
+    });
+
+    test('a client id with a changed signature is refused', () async {
+      String clientId = await registerClient();
+      String code = await codeFor(clientId);
+      String last = clientId.substring(clientId.length - 1);
+      String tampered =
+          clientId.substring(0, clientId.length - 1) +
+          (last == 'A' ? 'B' : 'A');
+      TestResponse res = await swap(tampered, code);
+      res.expectStatus(400);
+      expect(res.json['error'], 'invalid_client');
+    });
+
     test('a code of one client does not work for another', () async {
       String first = await registerClient();
       String second = await registerClient('http://localhost:9/cb');
@@ -332,6 +406,11 @@ void main() {
       );
       expect(
         (await ask(<String, dynamic>{'code_challenge': 'short'})).json['error'],
+        'invalid_request',
+      );
+      expect(
+        (await ask(<String, dynamic>{'code_challenge': 'ü' * 43}))
+            .json['error'],
         'invalid_request',
       );
       expect(

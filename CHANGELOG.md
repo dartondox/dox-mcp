@@ -1,3 +1,10 @@
+## Unreleased
+
+- Fix: a `code_verifier` with non-ASCII characters made the token route crash with a 500. Now a verifier must be 43 to 128 characters of `A-Z a-z 0-9 - . _ ~` (RFC 7636). Other verifiers get `invalid_request`.
+- `approve` now checks that `code_challenge` is 43 base64url characters, the shape of an S256 challenge.
+- A redirect address at registration may be at most 2048 characters (`McpOAuth.maxRedirectUriLength`). Longer ones get `invalid_redirect_uri`.
+- Docs: the consent page must show the redirect host and HTML-escape the client name.
+
 ## 3.1.1
 
 - New: `McpOAuth`, the OAuth 2.1 sign-in of the MCP spec. Discovery files (RFC 9728, RFC 8414), dynamic client registration with signed client ids (nothing stored), PKCE `S256`, one-time codes in a Dox cache shared by the isolates, `authenticate` for `Authorization: Bearer`, and `unauthorized` with `WWW-Authenticate`. The app gives the consent page and the tokens (`McpOAuthTokens`).

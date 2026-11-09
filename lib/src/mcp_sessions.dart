@@ -9,7 +9,7 @@ import 'package:dox_core/dox_core.dart';
 ///
 /// The server calls [create] for each `initialize`, and [isValid] for
 /// every later request of the session. [scope] ties a session to
-/// something of the app, like the user id, so one user can not use the
+/// something of the app, like the user id, so one user cannot use the
 /// session of another. Use the same [scope] for every request.
 abstract class McpSessions {
   const McpSessions();
@@ -33,7 +33,7 @@ abstract class McpSessions {
 ///
 /// The key comes from `APP_KEY` (label `dox:mcp`), unless you give one.
 ///
-/// A signed id can not be ended by itself. `DELETE` answers `200`, and
+/// A signed id cannot be ended by itself. `DELETE` answers `200`, and
 /// the client forgets the id. Give [ended] (a cache store, like
 /// `Cache().store('file')` or Redis) to remember ended ids too.
 class SignedMcpSessions extends McpSessions {
