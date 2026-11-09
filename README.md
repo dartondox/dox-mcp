@@ -105,8 +105,55 @@ Protocol versions: `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`. A 
 
 For another kind of session, implement `McpSessions`.
 
+## OAuth sign-in
+
+`McpOAuth` lets a client sign in by itself. You give the client only the address, like `https://my.app/mcp`. This is the sign-in of the MCP spec (OAuth 2.1 with PKCE).
+
+`dox_mcp` does the OAuth part. Your app does three things:
+
+1. **Tokens.** Implement `McpOAuthTokens`: `issue` makes a token for a grant, `verify` gives what a token stands for (like the user id), or null. You choose the table and how a token is revoked. Keep only a hash of it.
+2. **The consent page.** At `<issuer>/oauth/authorize` (or `authorizePage:`). It reads `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and `resource` from the query. The person signs in there the way your app always does.
+3. **The yes.** Your page calls your own route, with your own login. That route calls `oauth.approve(subject: ...)` and gives the page the address to send the browser to. On no, `oauth.deny(...)`. `oauth.checkClient(...)` gives the client's name for the page.
+
+```dart
+final McpOAuth oauth = McpOAuth(
+  issuer: 'https://my.app',
+  tokens: MyTokens(),
+  codes: Cache().store('file'), // shared by the isolates
+);
+
+class McpRouter extends Router {
+  @override
+  void register() {
+    oauth.routes(); // discovery, register, token
+    Route.match(<String>['GET', 'POST', 'DELETE'], '/mcp', handleMcp);
+  }
+}
+
+Future<DoxResponse> handleMcp(DoxRequest req) async {
+  Object? user = await oauth.authenticate(req); // Authorization: Bearer
+  if (user == null) return oauth.unauthorized(); // 401 + WWW-Authenticate
+  return mcp.handle(req, auth: user, scope: '$user');
+}
+```
+
+| Route | What it does |
+| --- | --- |
+| `GET /.well-known/oauth-protected-resource` (also with `/mcp` after it) | Names the MCP address and the issuer (RFC 9728). |
+| `GET /.well-known/oauth-authorization-server` | The endpoints (RFC 8414). PKCE `S256` only, `authorization_code` only, no client secret. |
+| `POST /oauth/register` | Dynamic client registration (RFC 7591). Nothing is stored: the `client_id` is the name and redirect addresses, signed with `APP_KEY` (label `dox:mcp-oauth`). |
+| `POST /oauth/token` | Swaps a code for a token. Form or JSON body. The code works once and for `codeTtl` (1 minute). The client, the redirect address and the PKCE verifier must match. Answers `no-store`. |
+
+Rules:
+
+- A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`. No `#fragment`.
+- The codes live in `codes`, a Dox cache. Use a store that all isolates share (file on one host, Redis on many). Each code is taken under a lock, so two isolates can not both swap it.
+- The public routes answer any origin (CORS `*`) and read no cookie. They skip the app's CORS list.
+- `issue` may throw `McpOAuthException` (like `access_denied` for too many clients). The client gets it from the token endpoint.
+- There is no refresh token. The app revokes a client by deleting its token.
+
 ## Security
 
-- Check who calls before `handle`: the MCP route has no auth of its own.
+- Check who calls before `handle`: the MCP route has no auth of its own. `McpOAuth` is one way.
 - `allowedOrigins` stops browser pages on other sites (DNS rebinding). Set it when the server runs on a local or private network.
 - Keep tokens out of logs. A token in the URL ends up in proxy logs, so prefer a header when your clients can send one.

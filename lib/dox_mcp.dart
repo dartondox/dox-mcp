@@ -31,5 +31,6 @@ library;
 
 export 'src/json_rpc.dart';
 export 'src/mcp_server.dart';
+export 'src/mcp_oauth.dart';
 export 'src/mcp_sessions.dart';
 export 'src/mcp_tool.dart';
