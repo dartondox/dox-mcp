@@ -1,5 +1,7 @@
 ## Unreleased
 
+- New: `McpDtoTool<T>`, a tool that takes a `@Dto` class as its input. `inputSchema` comes from the DTO, so `@Describe` texts show up. The arguments are checked like a DTO in a controller (async rules too), and `handle` gets the typed object. Bad arguments are a tool result with `isError: true` that lists each problem.
+- New: `McpToolResult.invalidArguments(tool, issues)`, the error result for bad arguments.
 - Fix: a `code_verifier` with non-ASCII characters made the token route crash with a 500. Now a verifier must be 43 to 128 characters of `A-Z a-z 0-9 - . _ ~` (RFC 7636). Other verifiers get `invalid_request`.
 - `approve` now checks that `code_challenge` is 43 base64url characters, the shape of an S256 challenge.
 - A redirect address at registration may be at most 2048 characters (`McpOAuth.maxRedirectUriLength`). Longer ones get `invalid_redirect_uri`.

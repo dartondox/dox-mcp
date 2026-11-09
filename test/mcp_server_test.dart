@@ -31,6 +31,117 @@ class AddTool extends McpTool {
   }
 }
 
+/// A small DTO, like a class with `@Dto()`.
+class CreateCategory {
+  const CreateCategory({required this.name, this.color});
+
+  final String name;
+  final String? color;
+}
+
+/// Written by hand in the shape `dox_builder` writes, for:
+/// `@Describe('The category name.') @Length(min: 2, max: 20) final String name;`
+/// and a `@Unique`-like async rule that refuses the name `taken`.
+class _CreateCategoryDto extends DtoSchema<CreateCategory> {
+  const _CreateCategoryDto();
+
+  static const Map<String, String> _m = <String, String>{};
+
+  @override
+  Type get type => CreateCategory;
+
+  @override
+  String get name => 'CreateCategory';
+
+  @override
+  bool get isAsync => true;
+
+  @override
+  CreateCategory? convert(Object? input, DtoState s, List<Object> p) {
+    if (input is! Map) {
+      s.notObject(input, p, _m);
+      return null;
+    }
+    int e = s.issues.length;
+    Object? c0 = s.string(s.read(input, 'name'), p, 'name', _m);
+    if (c0 == null || c0 is Undefined) s.required(p, 'name', _m);
+    Object? c1 = s.string(s.read(input, 'color'), p, 'color', _m);
+    if (s.issues.length != e) return null;
+    if (c0 is String && (c0.length < 2 || c0.length > 20)) {
+      s.fail(
+        p,
+        'name',
+        IssueCodes.lengthBetween,
+        DefaultMessages.lengthBetween,
+        c0,
+        params: const <String, Object?>{'min': 2, 'max': 20},
+      );
+      return null;
+    }
+    return CreateCategory(
+      name: c0 as String,
+      color: c1 is Undefined ? null : c1 as String?,
+    );
+  }
+
+  @override
+  Future<void> checkAsync(
+    CreateCategory value,
+    DtoState state,
+    List<Object> path,
+  ) async {
+    if (value.name == 'taken') {
+      state.fail(path, 'name', 'unique', 'The name is already taken', null);
+    }
+  }
+
+  @override
+  CreateCategory fromMap(Map<String, dynamic> m) {
+    return CreateCategory(name: m['name'] as String);
+  }
+
+  @override
+  Map<String, dynamic> toMap(CreateCategory o) {
+    return <String, dynamic>{'name': o.name, 'color': o.color};
+  }
+
+  @override
+  Map<String, dynamic> toJsonSchema() {
+    return <String, dynamic>{
+      'type': 'object',
+      'title': 'CreateCategory',
+      'properties': <String, dynamic>{
+        'name': <String, dynamic>{
+          'type': 'string',
+          'minLength': 2,
+          'maxLength': 20,
+          'description': 'The category name.',
+        },
+        'color': <String, dynamic>{
+          'type': <dynamic>['string', 'null'],
+        },
+      },
+      'required': <dynamic>['name'],
+    };
+  }
+}
+
+class CreateCategoryTool extends McpDtoTool<CreateCategory> {
+  @override
+  String get name => 'create_category';
+
+  @override
+  String get description => 'Add a category.';
+
+  @override
+  DtoSchema<CreateCategory> get dto => const _CreateCategoryDto();
+
+  @override
+  McpToolResult handle(CreateCategory input, McpContext context) {
+    return McpToolResult.text('${input.name} ${input.color}');
+  }
+}
+
 final McpServer mcp = McpServer(
   name: 'test-server',
   version: '1.2.3',
@@ -46,6 +157,7 @@ final McpServer mcp = McpServer(
         throw StateError('broken');
       },
     ),
+    CreateCategoryTool(),
   ],
 );
 
@@ -275,7 +387,7 @@ void main() {
         session: session,
       );
       List<dynamic> tools = res.json['result']['tools'] as List<dynamic>;
-      expect(tools, hasLength(2));
+      expect(tools, hasLength(3));
       expect(tools.first['name'], 'add');
       expect(tools.first['annotations'], <String, dynamic>{
         'readOnlyHint': true,
@@ -288,7 +400,7 @@ void main() {
         schema['properties']['a'],
         containsPair('description', 'The first number.'),
       );
-      expect(tools.last['inputSchema'], <String, dynamic>{
+      expect(tools[1]['inputSchema'], <String, dynamic>{
         'type': 'object',
         'properties': <String, dynamic>{},
       });
@@ -335,6 +447,93 @@ void main() {
       expect(boom.json['result'], <String, dynamic>{
         'content': <dynamic>[
           <String, dynamic>{'type': 'text', 'text': 'Bad state: broken'},
+        ],
+        'isError': true,
+      });
+    });
+
+    test('a DTO tool lists the DTO schema with its descriptions', () async {
+      TestResponse res = await post(
+        'ann',
+        request(20, 'tools/list'),
+        session: session,
+      );
+      Map<String, dynamic> tool =
+          (res.json['result']['tools'] as List<dynamic>).last
+              as Map<String, dynamic>;
+      expect(tool['name'], 'create_category');
+      Map<String, dynamic> schema = tool['inputSchema'] as Map<String, dynamic>;
+      expect(schema['type'], 'object');
+      expect(schema['required'], <String>['name']);
+      expect(schema['properties']['name'], <String, dynamic>{
+        'type': 'string',
+        'minLength': 2,
+        'maxLength': 20,
+        'description': 'The category name.',
+      });
+    });
+
+    test('a DTO tool gets the typed DTO', () async {
+      TestResponse res = await post(
+        'ann',
+        request(21, 'tools/call', <String, dynamic>{
+          'name': 'create_category',
+          'arguments': <String, dynamic>{'name': 'Food', 'color': '#00ff00'},
+        }),
+        session: session,
+      );
+      expect(res.json['result'], <String, dynamic>{
+        'content': <dynamic>[
+          <String, dynamic>{'type': 'text', 'text': 'Food #00ff00'},
+        ],
+      });
+    });
+
+    test('bad DTO input is an error result with each problem', () async {
+      Future<Map<String, dynamic>> call(Object? args) async {
+        TestResponse res = await post(
+          'ann',
+          request(22, 'tools/call', <String, dynamic>{
+            'name': 'create_category',
+            'arguments': args,
+          }),
+          session: session,
+        );
+        expect(res.json.containsKey('error'), isFalse);
+        return res.json['result'] as Map<String, dynamic>;
+      }
+
+      Map<String, dynamic> bad = await call(<String, dynamic>{
+        'name': 5,
+        'color': true,
+      });
+      expect(bad['isError'], isTrue);
+      String text = bad['content'][0]['text'] as String;
+      expect(
+        text,
+        startsWith(
+          'Input validation error: Invalid arguments for tool '
+          'create_category: name: ',
+        ),
+      );
+      expect(text, contains('; color: '));
+
+      Map<String, dynamic> short = await call(<String, dynamic>{'name': 'x'});
+      expect(short['isError'], isTrue);
+      expect(short['content'][0]['text'], contains('name: '));
+
+      // the async step runs too, like @Unique
+      Map<String, dynamic> taken = await call(<String, dynamic>{
+        'name': 'taken',
+      });
+      expect(taken, <String, dynamic>{
+        'content': <dynamic>[
+          <String, dynamic>{
+            'type': 'text',
+            'text':
+                'Input validation error: Invalid arguments for tool '
+                'create_category: name: The name is already taken',
+          },
         ],
         'isError': true,
       });
