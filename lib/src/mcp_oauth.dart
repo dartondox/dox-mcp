@@ -134,6 +134,15 @@ class McpOAuth {
   static const String registerPath = '/oauth/register';
   static const String tokenPath = '/oauth/token';
 
+  /// The longest redirect address a client may register.
+  static const int maxRedirectUriLength = 2048;
+
+  // RFC 7636 4.1: 43 to 128 of these characters.
+  static final RegExp _verifierShape = RegExp(r'^[A-Za-z0-9\-._~]{43,128}$');
+
+  // An S256 challenge is a SHA-256 hash in base64url: always 43 characters.
+  static final RegExp _challengeShape = RegExp(r'^[A-Za-z0-9_-]{43}$');
+
   /// The label of the key made from `APP_KEY`.
   static const String keyLabel = 'dox:mcp-oauth';
 
@@ -279,7 +288,9 @@ class McpOAuth {
         );
       }
       String code = _field(body, 'code');
-      String verifier = _field(body, 'code_verifier');
+      // checked before the code is taken, so a bad verifier gives a
+      // normal error and not a crash
+      String challenge = _challenge(_field(body, 'code_verifier'));
       McpOAuthClient client = this.client(_field(body, 'client_id'));
       String redirectUri = _field(body, 'redirect_uri');
 
@@ -294,7 +305,7 @@ class McpOAuth {
       bool same =
           Hash.equals('${saved['c']}', client.id) &
           Hash.equals('${saved['r']}', redirectUri) &
-          Hash.equals('${saved['ch']}', _challenge(verifier));
+          Hash.equals('${saved['ch']}', challenge);
       if (!same) {
         throw const McpOAuthException(
           'invalid_grant',
@@ -374,10 +385,10 @@ class McpOAuth {
         'code_challenge_method must be S256',
       );
     }
-    if (codeChallenge.length < 43 || codeChallenge.length > 128) {
+    if (!_challengeShape.hasMatch(codeChallenge)) {
       throw const McpOAuthException(
         'invalid_request',
-        'code_challenge must be 43 to 128 characters',
+        'code_challenge must be 43 base64url characters (S256)',
       );
     }
     if (resource != null && resource.isNotEmpty && !_isOurs(resource)) {
@@ -462,6 +473,12 @@ class McpOAuth {
   }
 
   static void _checkRedirectShape(String uri) {
+    if (uri.length > maxRedirectUriLength) {
+      throw const McpOAuthException(
+        'invalid_redirect_uri',
+        'A redirect address must be at most $maxRedirectUriLength characters',
+      );
+    }
     Uri? parsed = Uri.tryParse(uri);
     bool loopback =
         parsed != null &&
@@ -503,7 +520,15 @@ class McpOAuth {
     return _base64(digest.bytes);
   }
 
+  /// The S256 challenge of [verifier]. Throws `invalid_request` when the
+  /// verifier is not 43 to 128 of `A-Z a-z 0-9 - . _ ~` (RFC 7636 4.1).
   static String _challenge(String verifier) {
+    if (!_verifierShape.hasMatch(verifier)) {
+      throw const McpOAuthException(
+        'invalid_request',
+        'code_verifier must be 43 to 128 characters of A-Z a-z 0-9 - . _ ~',
+      );
+    }
     return _base64(sha256.convert(ascii.encode(verifier)).bytes);
   }
 

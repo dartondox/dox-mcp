@@ -101,7 +101,7 @@ Protocol versions: `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`. A 
 
 - Every isolate, and every server with the same `APP_KEY`, can check an id. Nothing is stored.
 - A new `APP_KEY` ends every session. Clients start a new one by themselves.
-- A signed id can not be ended by itself. To refuse ended ids, give a cache store: `SignedMcpSessions(ended: Cache().store('redis'))`. Use a store that all isolates share (file or Redis, not memory).
+- A signed id cannot be ended by itself. To refuse ended ids, give a cache store: `SignedMcpSessions(ended: Cache().store('redis'))`. Use a store that all isolates share (file or Redis, not memory).
 
 For another kind of session, implement `McpSessions`.
 
@@ -114,6 +114,11 @@ For another kind of session, implement `McpSessions`.
 1. **Tokens.** Implement `McpOAuthTokens`: `issue` makes a token for a grant, `verify` gives what a token stands for (like the user id), or null. You choose the table and how a token is revoked. Keep only a hash of it.
 2. **The consent page.** At `<issuer>/oauth/authorize` (or `authorizePage:`). It reads `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and `resource` from the query. The person signs in there the way your app always does.
 3. **The yes.** Your page calls your own route, with your own login. That route calls `oauth.approve(subject: ...)` and gives the page the address to send the browser to. On no, `oauth.deny(...)`. `oauth.checkClient(...)` gives the client's name for the page.
+
+On the consent page:
+
+- Show the host of `redirect_uri`, so the person sees where they are sent.
+- HTML-escape the client name. The client chooses it, so it can hold any text.
 
 ```dart
 final McpOAuth oauth = McpOAuth(
@@ -146,8 +151,9 @@ Future<DoxResponse> handleMcp(DoxRequest req) async {
 
 Rules:
 
-- A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`. No `#fragment`.
-- The codes live in `codes`, a Dox cache. Use a store that all isolates share (file on one host, Redis on many). Each code is taken under a lock, so two isolates can not both swap it.
+- A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`. No `#fragment`. At most 2048 characters (`McpOAuth.maxRedirectUriLength`).
+- A `code_verifier` must be 43 to 128 characters of `A-Z a-z 0-9 - . _ ~` (RFC 7636). Other verifiers get `invalid_request`. A `code_challenge` must be 43 base64url characters.
+- The codes live in `codes`, a Dox cache. Use a store that all isolates share (file on one host, Redis on many). Each code is taken under a lock, so two isolates cannot both swap it.
 - The public routes answer any origin (CORS `*`) and read no cookie. They skip the app's CORS list.
 - `issue` may throw `McpOAuthException` (like `access_denied` for too many clients). The client gets it from the token endpoint.
 - There is no refresh token. The app revokes a client by deleting its token.
