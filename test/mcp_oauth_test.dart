@@ -35,12 +35,17 @@ final McpOAuth oauth = McpOAuth(
   resourceName: 'Test',
 );
 
-/// The same server, but a code is good for 1 second.
-final McpOAuth shortOAuth = McpOAuth(
+/// The fake time of [clockOAuth].
+DateTime fakeNow = DateTime.utc(2026);
+
+DateTime readFakeNow() => fakeNow;
+
+/// The same server, but on a fake clock.
+final McpOAuth clockOAuth = McpOAuth(
   issuer: 'https://app.test/',
   tokens: tokens,
   key: utf8.encode('o' * 32),
-  codeTtl: const Duration(seconds: 1),
+  now: readFakeNow,
 );
 
 final McpServer mcp = McpServer(
@@ -56,7 +61,7 @@ class OAuthRouter extends Router {
     Route.match(<String>['GET', 'POST', 'DELETE'], '/mcp', handleMcp);
     // the app's own "yes" endpoint; the user comes from the app's login
     Route.post('/approve', approve);
-    Route.post('/short/token', shortOAuth.token);
+    Route.post('/clock/token', clockOAuth.token);
   }
 
   Future<DoxResponse> handleMcp(DoxRequest req) async {
@@ -151,11 +156,13 @@ void main() {
     String? verifierOverride,
     String? redirectOverride,
     String path = '/oauth/token',
+    Map<String, String> headers = const <String, String>{},
   }) {
     return client.post(
       path,
       headers: <String, String>{
         'content-type': 'application/x-www-form-urlencoded',
+        ...headers,
       },
       body: Uri(
         queryParameters: <String, String>{
@@ -349,19 +356,41 @@ void main() {
       (await swap(clientId, code)).expectStatus(200);
     });
 
-    test('an expired code is refused', () async {
+    test('a code works until codeTtl, then it is refused', () async {
       String clientId = await registerClient();
-      String url = await shortOAuth.approve(
-        subject: 'ann',
-        clientId: clientId,
-        redirectUri: redirect,
-        codeChallenge: challengeOf(verifier),
-      );
-      String code = Uri.parse(url).queryParameters['code']!;
-      await Future<void>.delayed(const Duration(milliseconds: 2100));
-      TestResponse res = await swap(clientId, code, path: '/short/token');
+      Future<String> code() async {
+        String url = await clockOAuth.approve(
+          subject: 'ann',
+          clientId: clientId,
+          redirectUri: redirect,
+          codeChallenge: challengeOf(verifier),
+        );
+        return Uri.parse(url).queryParameters['code']!;
+      }
+
+      String onTime = await code();
+      fakeNow = fakeNow.add(const Duration(minutes: 1));
+      (await swap(clientId, onTime, path: '/clock/token')).expectStatus(200);
+
+      String late = await code();
+      fakeNow = fakeNow.add(const Duration(minutes: 1, milliseconds: 1));
+      TestResponse res = await swap(clientId, late, path: '/clock/token');
       res.expectStatus(400);
       expect(res.json['error'], 'invalid_grant');
+    });
+
+    test('a verifier of 43 or 128 characters works (RFC 7636)', () async {
+      String clientId = await registerClient();
+      for (String good in <String>['a' * 43, 'Z' * 128]) {
+        String url = await oauth.approve(
+          subject: 'ann',
+          clientId: clientId,
+          redirectUri: redirect,
+          codeChallenge: challengeOf(good),
+        );
+        String code = Uri.parse(url).queryParameters['code']!;
+        (await swap(clientId, code, verifierOverride: good)).expectStatus(200);
+      }
     });
 
     test('a client id with a changed signature is refused', () async {
@@ -372,8 +401,22 @@ void main() {
           clientId.substring(0, clientId.length - 1) +
           (last == 'A' ? 'B' : 'A');
       TestResponse res = await swap(tampered, code);
-      res.expectStatus(400);
+      res.expectStatus(401);
       expect(res.json['error'], 'invalid_client');
+      expect(res.header('www-authenticate'), isNull);
+
+      // RFC 6749 5.2: with an Authorization header, name its scheme
+      TestResponse basic = await swap(
+        tampered,
+        code,
+        headers: <String, String>{'authorization': 'Basic eDp5'},
+      );
+      basic.expectStatus(401);
+      expect(basic.json['error'], 'invalid_client');
+      expect(
+        basic.header('www-authenticate'),
+        'Basic realm="https://app.test"',
+      );
     });
 
     test('a code of one client does not work for another', () async {
