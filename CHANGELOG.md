@@ -1,3 +1,9 @@
+## Unreleased
+
+- Fix: the token route answered `400` for `invalid_client`. RFC 6749 (5.2) asks for `401`, and for a `WWW-Authenticate` header when the client sent an `Authorization` header. Now it answers `401`, and adds `WWW-Authenticate` with the scheme the client used. The body is the same.
+- A code now expires exactly after `codeTtl`. Before, only the cache TTL ended it, so it depended on the cache store.
+- New: `McpOAuth(now:)`, an optional function that gives the time. Default: `DateTime.now`. Tests can pass a fake clock.
+
 ## 3.1.2
 
 - New: `McpDtoTool<T>`, a tool that takes a `@Dto` class as its input. `inputSchema` comes from the DTO, so `@Describe` texts show up. The arguments are checked like a DTO in a controller (async rules too), and `handle` gets the typed object. Bad arguments are a tool result with `isError: true` that lists each problem.

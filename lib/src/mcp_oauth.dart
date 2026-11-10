@@ -125,7 +125,9 @@ class McpOAuth {
     this.codeTtl = const Duration(minutes: 1),
     this.resourceName,
     this._key,
-  }) : issuer = issuer.replaceFirst(RegExp(r'/+$'), '');
+    DateTime Function()? now,
+  }) : issuer = issuer.replaceFirst(RegExp(r'/+$'), ''),
+       _now = now ?? DateTime.now;
 
   static const String protectedResourcePath =
       '/.well-known/oauth-protected-resource';
@@ -164,6 +166,9 @@ class McpOAuth {
   final String? _authorizePage;
   final Cache? _codes;
   final List<int>? _key;
+
+  /// Reads the time. Tests pass a fake clock. Default: `DateTime.now`.
+  final DateTime Function() _now;
 
   static final Random _random = Random.secure();
 
@@ -265,7 +270,7 @@ class McpOAuth {
       );
       return _public(<String, dynamic>{
         'client_id': client.id,
-        'client_id_issued_at': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+        'client_id_issued_at': _now().millisecondsSinceEpoch ~/ 1000,
         'client_name': client.name,
         'redirect_uris': client.redirectUris,
         'grant_types': <String>['authorization_code'],
@@ -295,7 +300,10 @@ class McpOAuth {
       String redirectUri = _field(body, 'redirect_uri');
 
       Map<String, dynamic>? saved = await _takeCode(code);
-      if (saved == null) {
+      // the cache also forgets it after codeTtl; this check is exact
+      Object? expires = saved?['e'];
+      if (saved == null ||
+          (expires is int && _now().millisecondsSinceEpoch > expires)) {
         throw const McpOAuthException(
           'invalid_grant',
           'The code is wrong, used or too old',
@@ -324,8 +332,20 @@ class McpOAuth {
         'token_type': 'Bearer',
       }).header('Cache-Control', 'no-store').header('Pragma', 'no-cache');
     } on McpOAuthException catch (error) {
+      if (error.error == 'invalid_client') return _invalidClient(req, error);
       return _oauthError(error);
     }
+  }
+
+  /// RFC 6749 5.2: `invalid_client` is a `401`. When the client sent an
+  /// `Authorization` header, the answer names its scheme in
+  /// `WWW-Authenticate`.
+  DoxResponse _invalidClient(DoxRequest req, McpOAuthException error) {
+    DoxResponse res = _public(error.toJson(), status: 401);
+    String? scheme = RegExp(r"^[A-Za-z0-9!#$%&'*+\-.^_`|~]+")
+        .stringMatch(req.header('authorization')?.trim() ?? '');
+    if (scheme == null) return res;
+    return res.header('WWW-Authenticate', '$scheme realm="$issuer"');
   }
 
   // ------------------------------------------------------------ for the app
@@ -403,6 +423,7 @@ class McpOAuth {
       'c': clientId,
       'r': redirectUri,
       'ch': codeChallenge,
+      'e': _now().add(codeTtl).millisecondsSinceEpoch,
     }, duration: codeTtl);
     return _redirect(redirectUri, <String, String>{
       'code': code,

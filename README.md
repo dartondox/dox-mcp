@@ -195,7 +195,7 @@ Future<DoxResponse> handleMcp(DoxRequest req) async {
 | `GET /.well-known/oauth-protected-resource` (also with `/mcp` after it) | Names the MCP address and the issuer (RFC 9728). |
 | `GET /.well-known/oauth-authorization-server` | The endpoints (RFC 8414). PKCE `S256` only, `authorization_code` only, no client secret. |
 | `POST /oauth/register` | Dynamic client registration (RFC 7591). Nothing is stored: the `client_id` is the name and redirect addresses, signed with `APP_KEY` (label `dox:mcp-oauth`). |
-| `POST /oauth/token` | Swaps a code for a token. Form or JSON body. The code works once and for `codeTtl` (1 minute). The client, the redirect address and the PKCE verifier must match. Answers `no-store`. |
+| `POST /oauth/token` | Swaps a code for a token. Form or JSON body. The code works once and for `codeTtl` (1 minute). The client, the redirect address and the PKCE verifier must match. Answers `no-store`. An unknown `client_id` gets `401` with `invalid_client`. |
 
 Rules:
 
