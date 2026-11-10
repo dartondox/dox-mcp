@@ -116,8 +116,9 @@ abstract class McpOAuthTokens {
 /// }
 /// ```
 class McpOAuth {
-  /// [now] reads the time, for the expiry of a code. Default:
-  /// `DateTime.now`. A test can pass a fake clock.
+  /// [now] reads the time, for the expiry of a code and the
+  /// `client_id_issued_at` of a new client. Default: `DateTime.now`.
+  /// A test can pass a fake clock.
   McpOAuth({
     required String issuer,
     required this.tokens,
