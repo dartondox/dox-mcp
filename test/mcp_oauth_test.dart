@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart' show sha256;
+import 'package:dox_cache/dox_cache.dart' show LockTimeoutException;
 import 'package:dox_core/dox_core.dart';
 import 'package:dox_core/testing.dart';
 import 'package:dox_mcp/dox_mcp.dart';
@@ -48,6 +49,39 @@ final McpOAuth clockOAuth = McpOAuth(
   now: readFakeNow,
 );
 
+/// A lock that is never free and throws on a timeout, like a cache with
+/// `CacheFlags(lockThrows: true)`.
+class BusyLock extends CacheLock {
+  BusyLock(super.name, super.ttl);
+
+  @override
+  Future<bool> get() async => false;
+
+  @override
+  Future<bool> release() async => false;
+
+  @override
+  Future<T> block<T>(Duration timeout, [Object? callback]) {
+    throw LockTimeoutException(name, timeout);
+  }
+}
+
+/// A cache whose locks are [BusyLock]s.
+class BusyCache extends Cache {
+  @override
+  CacheLock lock(String name, [Duration? ttl, String? owner]) {
+    return BusyLock(name, ttl);
+  }
+}
+
+/// The same server, with a lock that always times out.
+final McpOAuth lockedOAuth = McpOAuth(
+  issuer: 'https://app.test/',
+  tokens: tokens,
+  key: utf8.encode('o' * 32),
+  codes: BusyCache(),
+);
+
 final McpServer mcp = McpServer(
   name: 'test-server',
   version: '1.0.0',
@@ -62,6 +96,7 @@ class OAuthRouter extends Router {
     // the app's own "yes" endpoint; the user comes from the app's login
     Route.post('/approve', approve);
     Route.post('/clock/token', clockOAuth.token);
+    Route.post('/locked/token', lockedOAuth.token);
   }
 
   Future<DoxResponse> handleMcp(DoxRequest req) async {
@@ -375,6 +410,20 @@ void main() {
       String late = await code();
       fakeNow = fakeNow.add(const Duration(minutes: 1, milliseconds: 1));
       TestResponse res = await swap(clientId, late, path: '/clock/token');
+      res.expectStatus(400);
+      expect(res.json['error'], 'invalid_grant');
+    });
+
+    test('a lock timeout that throws gives invalid_grant, not 500', () async {
+      String clientId = await registerClient();
+      String url = await lockedOAuth.approve(
+        subject: 'ann',
+        clientId: clientId,
+        redirectUri: redirect,
+        codeChallenge: challengeOf(verifier),
+      );
+      String code = Uri.parse(url).queryParameters['code']!;
+      TestResponse res = await swap(clientId, code, path: '/locked/token');
       res.expectStatus(400);
       expect(res.json['error'], 'invalid_grant');
     });

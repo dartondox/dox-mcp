@@ -3,6 +3,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show Digest, Hmac, sha256;
+import 'package:dox_cache/dox_cache.dart' show LockTimeoutException;
 import 'package:dox_core/dox_core.dart';
 
 /// An OAuth error. The client gets `{ error, error_description }`.
@@ -481,7 +482,13 @@ class McpOAuth {
   Future<Map<String, dynamic>?> _takeCode(String code) async {
     String key = _codeKey(code);
     CacheLock lock = _store.lock('$key:lock', const Duration(seconds: 10));
-    if (!await lock.block(const Duration(seconds: 5))) return null;
+    // a cache set to throw on a lock timeout (`CacheFlags.lockThrows`)
+    // must give no code too, not a 500
+    try {
+      if (!await lock.block<bool>(const Duration(seconds: 5))) return null;
+    } on LockTimeoutException {
+      return null;
+    }
     try {
       Object? saved = await _store.get(key);
       await _store.forget(key);
