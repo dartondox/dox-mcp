@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart' show sha256;
-import 'package:dox_cache/dox_cache.dart' show LockTimeoutException;
 import 'package:dox_core/dox_core.dart';
 import 'package:dox_core/testing.dart';
 import 'package:dox_mcp/dox_mcp.dart';

@@ -3,7 +3,6 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' show Digest, Hmac, sha256;
-import 'package:dox_cache/dox_cache.dart' show LockTimeoutException;
 import 'package:dox_core/dox_core.dart';
 
 /// An OAuth error. The client gets `{ error, error_description }`.
