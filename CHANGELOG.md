@@ -1,4 +1,4 @@
-## Unreleased
+## 3.2.0
 
 - New: `dox add mcp` (the `mcp:install` command). It adds `lib/config/mcp.dart` with the `McpServer` and a sample `EchoTool`. It never overwrites a file. New dependency: `dox_annotation`.
 - Ships an AI agent skill (dox-mcp-guide). Install it in your app with `dart run skills@ get`.

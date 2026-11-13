@@ -1,6 +1,6 @@
 name: dox_mcp
 description: "Model Context Protocol (MCP) server for the Dox framework: tools over Streamable HTTP, with signed sessions that work on every isolate."
-version: 3.1.2
+version: 3.2.0
 repository: https://github.com/dartondox/dox-mcp
 homepage: https://dartondox.dev
 
@@ -9,11 +9,9 @@ environment:
 
 dependencies:
   crypto: ^3.0.6
-  # Raise to the dox_annotation release that has install.dart before
-  # releasing this package.
-  dox_annotation: ^3.1.0
-  dox_cache: ^3.1.2
-  dox_core: ^3.1.2
+  dox_annotation: ^3.2.0
+  dox_cache: ^3.2.0
+  dox_core: ^3.2.0
 
 dev_dependencies:
   lints: ^6.1.0
