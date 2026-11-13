@@ -1,6 +1,5 @@
 ## Unreleased
 
-- Requires Dart 3.14 or newer.
 - Ships an AI agent skill (dox-mcp-guide). Install it in your app with `dart run skills@ get`.
 - Fix: the token route gives `invalid_grant` when the lock of a code times out, also when the cache throws `LockTimeoutException` on a lock timeout. Before, that gave a `500`.
 - Fix: the token route answered `400` for `invalid_client`. RFC 6749 (5.2) asks for `401`, and for a `WWW-Authenticate` header when the client sent an `Authorization` header. Now it answers `401`, and adds `WWW-Authenticate` with the scheme the client used. The body is the same.
