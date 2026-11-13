@@ -15,6 +15,8 @@ For routes, controllers and app layout, see the `dox-core-guide` skill. For DTO 
 
 ## Install
 
+Fast way: `dox add mcp`. It adds the package, `lib/config/mcp.dart` (the `McpServer`) and a sample `EchoTool`. It never overwrites a file. It adds no route: mount `mcp` on a route behind your own auth.
+
 ```bash
 dart pub add dox_mcp
 ```

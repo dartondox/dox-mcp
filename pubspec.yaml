@@ -9,9 +9,16 @@ environment:
 
 dependencies:
   crypto: ^3.0.6
+  # Raise to the dox_annotation release that has install.dart before
+  # releasing this package.
+  dox_annotation: ^3.1.0
   dox_cache: ^3.1.2
   dox_core: ^3.1.2
 
 dev_dependencies:
   lints: ^6.1.0
   test: ^1.33.0
+
+# The `dox` CLI finds the commands of this package here (`dox mcp:install`).
+dox:
+  commands: package:dox_mcp/commands.dart
