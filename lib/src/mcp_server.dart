@@ -75,8 +75,10 @@ class McpServer {
   /// always allowed.
   final List<String>? allowedOrigins;
 
-  /// Called when a tool throws. The model gets an error result with the
-  /// error text either way. Use it to log.
+  /// Called when a tool throws. It gets the full error. The client gets
+  /// `Tool failed`, unless `APP_ENV` is `development` or `local`. A tool
+  /// that wants the model to see a message must return
+  /// `McpToolResult.error(...)`. Use this to log.
   final void Function(String tool, Object error, StackTrace stack)? onToolError;
 
   final Map<String, McpTool> _tools;
