@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dox_core/dox_core.dart';
+import 'package:dox_core/http/http_response_handler.dart' show showErrors;
 import 'package:dox_mcp/src/json_rpc.dart';
 import 'package:dox_mcp/src/mcp_sessions.dart';
 import 'package:dox_mcp/src/mcp_tool.dart';
@@ -307,7 +308,10 @@ class McpServer {
       return result.toJson();
     } catch (error, stack) {
       onToolError?.call(toolName, error, stack);
-      return McpToolResult.error('$error').toJson();
+      // The error text can hold hosts, SQL or passwords. Like the web
+      // responses of Dox, show it only in development and local.
+      return McpToolResult.error(showErrors() ? '$error' : 'Tool failed')
+          .toJson();
     }
   }
 

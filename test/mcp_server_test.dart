@@ -142,7 +142,13 @@ class CreateCategoryTool extends McpDtoTool<CreateCategory> {
   }
 }
 
+/// what `onToolError` got
+final List<Object> toolErrors = <Object>[];
+
 final McpServer mcp = McpServer(
+  onToolError: (String tool, Object error, StackTrace stack) {
+    toolErrors.add(error);
+  },
   name: 'test-server',
   version: '1.2.3',
   title: 'Test',
@@ -154,7 +160,14 @@ final McpServer mcp = McpServer(
       name: 'boom',
       description: 'Always fails.',
       handler: (Map<String, dynamic> args, McpContext context) {
-        throw StateError('broken');
+        throw StateError('broken host=db.internal password=p@ss/word');
+      },
+    ),
+    McpTool.of(
+      name: 'deliberate',
+      description: 'Returns an error on purpose.',
+      handler: (Map<String, dynamic> args, McpContext context) {
+        return McpToolResult.error('No category with this id');
       },
     ),
     CreateCategoryTool(),
@@ -387,7 +400,7 @@ void main() {
         session: session,
       );
       List<dynamic> tools = res.json['result']['tools'] as List<dynamic>;
-      expect(tools, hasLength(3));
+      expect(tools, hasLength(4));
       expect(tools.first['name'], 'add');
       expect(tools.first['annotations'], <String, dynamic>{
         'readOnlyHint': true,
@@ -444,12 +457,53 @@ void main() {
         request(5, 'tools/call', <String, dynamic>{'name': 'boom'}),
         session: session,
       );
+      // APP_ENV is not development here: the text is hidden
       expect(boom.json['result'], <String, dynamic>{
         'content': <dynamic>[
-          <String, dynamic>{'type': 'text', 'text': 'Bad state: broken'},
+          <String, dynamic>{'type': 'text', 'text': 'Tool failed'},
         ],
         'isError': true,
       });
+      expect('${boom.json}', isNot(contains('p@ss/word')));
+    });
+
+    Future<Map<String, dynamic>> callTool(int id, String name) async {
+      TestResponse res = await post(
+        'ann',
+        request(id, 'tools/call', <String, dynamic>{'name': name}),
+        session: session,
+      );
+      return res.json['result'] as Map<String, dynamic>;
+    }
+
+    test('an uncaught error shows its text in development and local', () async {
+      for (String env in <String>['development', 'local']) {
+        Env().env['APP_ENV'] = env;
+        Map<String, dynamic> result = await callTool(6, 'boom');
+        expect(result['isError'], isTrue);
+        expect(
+          result['content'][0]['text'],
+          'Bad state: broken host=db.internal password=p@ss/word',
+        );
+      }
+      Env().env.remove('APP_ENV');
+    });
+
+    test(
+      'an error the tool returns on purpose always passes through',
+      () async {
+        Map<String, dynamic> result = await callTool(7, 'deliberate');
+        expect(result['isError'], isTrue);
+        expect(result['content'][0]['text'], 'No category with this id');
+      },
+    );
+
+    test('onToolError still gets the full error in production', () async {
+      toolErrors.clear();
+      Env().env.remove('APP_ENV');
+      await callTool(8, 'boom');
+      expect(toolErrors, hasLength(1));
+      expect('${toolErrors.single}', contains('password=p@ss/word'));
     });
 
     test('a DTO tool lists the DTO schema with its descriptions', () async {
