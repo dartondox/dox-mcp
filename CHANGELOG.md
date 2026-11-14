@@ -1,3 +1,7 @@
+## Unreleased
+
+- Fix: a tool that throws no longer sends the error text to the MCP client in production. The text can hold hosts, SQL or passwords. The client now gets `Tool failed`. The full error text is still shown when `APP_ENV` is `development` or `local`, the same rule as the Dox web responses. `onToolError` always gets the full error. An error that a tool returns on purpose with `McpToolResult.error(...)` is sent as it is.
+
 ## 3.2.0
 
 - New: `dox add mcp` (the `mcp:install` command). It adds `lib/config/mcp.dart` with the `McpServer` and a sample `EchoTool`. It never overwrites a file. New dependency: `dox_annotation`.

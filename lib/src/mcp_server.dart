@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dox_core/dox_core.dart';
+import 'package:dox_core/http/http_response_handler.dart' show showErrors;
 import 'package:dox_mcp/src/json_rpc.dart';
 import 'package:dox_mcp/src/mcp_sessions.dart';
 import 'package:dox_mcp/src/mcp_tool.dart';
@@ -74,8 +75,10 @@ class McpServer {
   /// always allowed.
   final List<String>? allowedOrigins;
 
-  /// Called when a tool throws. The model gets an error result with the
-  /// error text either way. Use it to log.
+  /// Called when a tool throws. It gets the full error. The client gets
+  /// `Tool failed`, unless `APP_ENV` is `development` or `local`. A tool
+  /// that wants the model to see a message must return
+  /// `McpToolResult.error(...)`. Use this to log.
   final void Function(String tool, Object error, StackTrace stack)? onToolError;
 
   final Map<String, McpTool> _tools;
@@ -307,7 +310,10 @@ class McpServer {
       return result.toJson();
     } catch (error, stack) {
       onToolError?.call(toolName, error, stack);
-      return McpToolResult.error('$error').toJson();
+      // The error text can hold hosts, SQL or passwords. Like the web
+      // responses of Dox, show it only in development and local.
+      return McpToolResult.error(showErrors() ? '$error' : 'Tool failed')
+          .toJson();
     }
   }
 

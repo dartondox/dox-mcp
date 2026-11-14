@@ -95,7 +95,7 @@ Methods: `initialize`, `ping`, `tools/list`, `tools/call`. Others get `-32601 Me
 
 - An unknown tool is a JSON-RPC error (`-32602`).
 - Bad arguments are a tool result with `isError: true` and the problems, so the model can fix them.
-- A tool that throws gives a tool result with `isError: true` and the error text. `onToolError` gets the error, for logs.
+- A tool that throws gives a tool result with `isError: true`. The client gets `Tool failed`, unless `APP_ENV` is `development` or `local`. A tool that wants the model to see a message must return `McpToolResult.error(...)`. `onToolError` gets the full error, for logs.
 
 Protocol versions: `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`. A client that asks for another one gets the newest.
 

@@ -190,6 +190,6 @@ Use a store all isolates share (file or Redis, not memory). For another kind of 
 - A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`, with no `#fragment`.
 - To revoke an OAuth client, delete its token. There is no refresh token.
 - Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`. Others get `-32601`. An unknown tool is JSON-RPC error `-32602`.
-- A tool that throws becomes a tool result with `isError: true`. Use `onToolError` to log it.
+- A tool that throws becomes a tool result with `isError: true`. The client gets `Tool failed`, unless `APP_ENV` is `development` or `local`. A tool that wants the model to see a message must return `McpToolResult.error(...)`. `onToolError` gets the full error, for logs.
 - `initialize` must be sent alone, not in a batch.
 - Protocol versions: `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`.
