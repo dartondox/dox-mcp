@@ -127,9 +127,9 @@ abstract class McpOAuthTokens {
 /// }
 ///
 /// Future<DoxResponse> handle(DoxRequest req) async {
-///   Object? user = await oauth.authenticate(req);
+///   User? user = await oauth.authenticate(req) as User?;
 ///   if (user == null) return oauth.unauthorized();
-///   return mcp.handle(req, auth: user, scope: '$user');
+///   return mcp.handle(req, auth: user, scope: 'user:${user.id}');
 /// }
 /// ```
 class McpOAuth {
