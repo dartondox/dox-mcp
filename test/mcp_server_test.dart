@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dox_core/dox_core.dart';
 import 'package:dox_core/testing.dart';
@@ -188,6 +189,7 @@ class TestRouter extends Router {
 }
 
 void main() {
+  originWarningTests();
   late DoxTestClient client;
   Map<String, String> json = <String, String>{
     'content-type': 'application/json',
@@ -657,5 +659,50 @@ void main() {
       headers: <String, String>{...json, 'origin': 'https://evil.test'},
       body: '{}',
     )).expectStatus(403);
+  });
+}
+
+class _FakeStderr implements Stdout {
+  final StringBuffer text = StringBuffer();
+
+  @override
+  void writeln([Object? object = '']) => text.writeln(object);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
+McpServer _server({List<String>? origins}) {
+  return McpServer(
+    name: 'x',
+    version: '1',
+    tools: <McpTool>[AddTool()],
+    allowedOrigins: origins,
+  );
+}
+
+void originWarningTests() {
+  group('open origin warning', () {
+    test('warns once when allowedOrigins is null', () {
+      McpServer.originWarningDone = false;
+      _FakeStderr err = _FakeStderr();
+      IOOverrides.runZoned(() {
+        _server();
+        _server();
+      }, stderr: () => err);
+      String out = err.text.toString();
+      expect(out, contains('[mcp] warning'));
+      expect('warning'.allMatches(out), hasLength(1));
+    });
+
+    test('does not warn when allowedOrigins is set', () {
+      McpServer.originWarningDone = false;
+      _FakeStderr err = _FakeStderr();
+      IOOverrides.runZoned(() {
+        _server(origins: <String>['https://app.example.com']);
+        _server(origins: <String>[]);
+      }, stderr: () => err);
+      expect(err.text.toString(), isEmpty);
+    });
   });
 }
