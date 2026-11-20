@@ -4,6 +4,7 @@ import 'package:dox_core/dox_core.dart';
 import 'package:dox_core/http/http_response_handler.dart' show showErrors;
 import 'package:dox_mcp/src/json_rpc.dart';
 import 'package:dox_mcp/src/mcp_sessions.dart';
+import 'package:dox_mcp/src/origin_check.dart';
 import 'package:dox_mcp/src/mcp_tool.dart';
 
 /// The header with the session id.
@@ -45,6 +46,7 @@ class McpServer {
     if (_tools.length != tools.length) {
       throw ArgumentError('Two MCP tools have the same name');
     }
+    if (allowedOrigins == null) warnOpenOriginOnce();
   }
 
   /// The protocol versions this server speaks, newest first.
