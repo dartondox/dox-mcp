@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:dox_core/dox_core.dart';
 import 'package:dox_core/testing.dart';
 import 'package:dox_mcp/dox_mcp.dart';
+import 'package:dox_mcp/src/origin_check.dart';
 import 'package:test/test.dart';
 
 /// Adds two numbers. Reads the user from `auth`.
@@ -684,7 +685,7 @@ McpServer _server({List<String>? origins}) {
 void originWarningTests() {
   group('open origin warning', () {
     test('warns once when allowedOrigins is null', () {
-      McpServer.originWarningDone = false;
+      originWarningDone = false;
       _FakeStderr err = _FakeStderr();
       IOOverrides.runZoned(() {
         _server();
@@ -696,7 +697,7 @@ void originWarningTests() {
     });
 
     test('does not warn when allowedOrigins is set', () {
-      McpServer.originWarningDone = false;
+      originWarningDone = false;
       _FakeStderr err = _FakeStderr();
       IOOverrides.runZoned(() {
         _server(origins: <String>['https://app.example.com']);

@@ -1,10 +1,10 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:dox_core/dox_core.dart';
 import 'package:dox_core/http/http_response_handler.dart' show showErrors;
 import 'package:dox_mcp/src/json_rpc.dart';
 import 'package:dox_mcp/src/mcp_sessions.dart';
+import 'package:dox_mcp/src/origin_check.dart';
 import 'package:dox_mcp/src/mcp_tool.dart';
 
 /// The header with the session id.
@@ -46,23 +46,7 @@ class McpServer {
     if (_tools.length != tools.length) {
       throw ArgumentError('Two MCP tools have the same name');
     }
-    if (allowedOrigins == null) _warnOpenOriginOnce();
-  }
-
-  /// True after the open-origin warning was written in this isolate. It is
-  /// public only so tests can reset it.
-  static bool originWarningDone = false;
-
-  /// Writes once that [allowedOrigins] is not set. Then any website can
-  /// call the server from a browser (DNS rebinding), even a local one.
-  static void _warnOpenOriginOnce() {
-    if (originWarningDone) return;
-    originWarningDone = true;
-    stderr.writeln(
-      '[mcp] warning: McpServer(allowedOrigins:) is not set. Any website '
-      'can call this server from a browser, also when it runs on localhost. '
-      "Set allowedOrigins to your own sites, eg. ['https://app.example.com'].",
-    );
+    if (allowedOrigins == null) warnOpenOriginOnce();
   }
 
   /// The protocol versions this server speaks, newest first.
