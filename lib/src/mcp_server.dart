@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dox_core/dox_core.dart';
+// Needed for dox_core 3.2.3 and older. Newer dox_core exports showErrors,
+// so drop this import once the dox_core floor is above 3.2.3.
+// ignore: unnecessary_import
 import 'package:dox_core/http/http_response_handler.dart' show showErrors;
 import 'package:dox_mcp/src/json_rpc.dart';
 import 'package:dox_mcp/src/mcp_sessions.dart';
