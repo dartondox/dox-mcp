@@ -20,7 +20,7 @@ Fast way: `dox add mcp`. It adds the package and runs `dox mcp:install`, which w
 dart pub add dox_mcp
 ```
 
-There is no provider and no config file. You make one `McpServer` and mount it on a route. `APP_KEY` must be set in `.env` (the server signs data with it).
+There is no provider. You make one `McpServer` (in `lib/config/mcp.dart`) and mount it on a route. `APP_KEY` must be set in `.env` (the server signs data with it).
 
 ## Recipes
 
@@ -186,7 +186,7 @@ For a kind of input this package does not have, extend `McpCustomInput<T>`: `met
 
 1. Implement `McpOAuthTokens`: `Future<String> issue(McpOAuthGrant grant)` makes a token (keep only a hash of it), `Future<Object?> verify(String token)` returns what it stands for (like a user), or null. `grant` has `subject`, `client` and `redirectUri`. `issue` may throw `McpOAuthException` (for example `access_denied`).
 2. Serve a consent page at `<issuer>/oauth/authorize` (or pass `authorizePage`). It reads `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and `resource` from the query. The person signs in the way your app always does. `await oauth.verifyClient(clientId, redirectUri)` gives the client (`id`, `name`, `host`, `redirectUris`) for the page and throws when it is wrong. Show `client.host` next to the name: the client chooses its name, not its host.
-3. Make a route of your own, behind your login, that answers the page. On yes, call `await oauth.approve(subject:, clientId:, redirectUri:, codeChallenge:, state:, resource:)`. On no, call `await oauth.denyClient(clientId:, redirectUri:, state:)`. Both return the address to send the browser to.
+3. Make a route of your own, behind your login, that answers the page. On yes, call `await oauth.approve(subject:, clientId:, redirectUri:, codeChallenge:, codeChallengeMethod:, state:, resource:)`. On no, call `await oauth.denyClient(clientId:, redirectUri:, state:)`. Both return the address to send the browser to.
 
 ```dart
 final McpOAuth oauth = McpOAuth(
@@ -204,15 +204,15 @@ class McpRouter extends Router {
 }
 
 Future<DoxResponse> handleMcp(DoxRequest req) async {
-  Object? user = await oauth.authenticate(req); // reads Authorization: Bearer
+  User? user = await oauth.authenticate(req) as User?; // Authorization: Bearer
   if (user == null) return oauth.unauthorized(); // 401 with WWW-Authenticate
-  return mcp.handle(req, auth: user, scope: '$user');
+  return mcp.handle(req, auth: user, scope: 'user:${user.id}');
 }
 ```
 
 A client names itself with a client metadata document: its `client_id` is an `https` address of a JSON file with its name and redirect addresses. `dox_mcp` loads the file (small files, public hosts only, no redirects) and checks it. The app registers and stores nothing. Two options limit the loads:
 
-- `allowedClientHosts: <String>{'claude.ai'}`: accept clients from these hosts only. The default (`null`) accepts any public host.
+- `allowedClientHosts: <String>{'claude.ai'}`: load client documents from these hosts only. The default (`null`) accepts any public host. It does not block clients that register at `POST /oauth/register`.
 - `maxClientFetches` (default 8): how many documents one isolate loads at the same time. Past it, a new client is refused at once.
 - `maxClientFetchesPerHost` (default 2) and `McpOAuthHttpFetcher(maxFetchesPerAddress:)` (default 2): one slow host or IP can not take all the slots.
 
@@ -231,11 +231,11 @@ Tests pass `clientFetcher:` (an `McpOAuthClientFetcher`) to give fake documents 
 - `McpInput.form` throws an `ArgumentError` for a DTO with a nested object or list (lists of enum values are fine), and for a DTO with async rules like `@Unique`. Check those in the tool.
 - Never ask for a password or a key with a form. Use `McpInput.url`. `McpAccepted` for a URL only means the user agreed to open it, so check the result in the database. Never put a secret in the URL.
 - Two inputs with the same question in one `inputRequired` list throw an `ArgumentError`. An empty list throws too.
-- A question the client can not show gets an error that names the missing capability. Check `context.clientCapabilities` first if the tool can work without the question. An older client can not answer a question at all: for it `clientCapabilities` is null.
+- A question the client can not show gets an error that names the missing capability. Check `context.clientCapabilities` first if the tool can work without the question.
 - Call `oauth.routes()` in a router with no prefix. Clients look for `/.well-known/...` at the root.
 - The `codes` cache must be shared by all isolates (file on one host, Redis on many). The memory store breaks on many isolates.
 - Put the route that calls `oauth.approve` behind your login and CSRF protection, or another site can make a signed-in person say yes.
 - On the consent page, show the host of `client_id` and of `redirect_uri`, and HTML-escape the client name. The client chooses the name.
 - Use the async `verifyClient` and `denyClient`, not `checkClient` and `deny`. The sync ones can not wait for a metadata document, so they throw `invalid_client` until it is in memory.
-- A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`, with no `#fragment`. For an `http` address on the same computer, the port may differ.
+- A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`, with no `#fragment`. For a client with a metadata document, the port of an `http` address on the same computer may differ.
 - To revoke an OAuth client, delete its token. There is no refresh token.

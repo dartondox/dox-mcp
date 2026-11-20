@@ -137,13 +137,13 @@ class McpRouter extends Router {
 }
 
 Future<DoxResponse> handleMcp(DoxRequest req) async {
-  Object? user = await oauth.authenticate(req);
+  User? user = await oauth.authenticate(req) as User?;
   if (user == null) return oauth.unauthorized();
-  return mcp.handle(req, auth: user, scope: '$user');
+  return mcp.handle(req, auth: user, scope: 'user:${user.id}');
 }
 ```
 
-A client names itself with a client metadata document: its `client_id` is an `https` address of a JSON file. `dox_mcp` loads and checks the file. `allowedClientHosts` (accept these hosts only), `maxClientFetches` (how many files one isolate loads at the same time) and `maxClientFetchesPerHost` limit the loads. On the consent page, use `await oauth.verifyClient(...)` and show `client.host` next to the client name.
+A client names itself with a client metadata document: its `client_id` is an `https` address of a JSON file. `dox_mcp` loads and checks the file. Options limit this: `allowedClientHosts` (load client documents from these hosts only; it does not block clients that register at `POST /oauth/register`), `maxClientFetches` (how many files one isolate loads at the same time) and `maxClientFetchesPerHost`. On the consent page, use `await oauth.verifyClient(...)` and show `client.host` next to the client name.
 
 See the [full guide](https://dartondox.dev/latest/packages/mcp/#signing-in-with-oauth) for the tokens and the consent page.
 

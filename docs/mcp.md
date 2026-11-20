@@ -192,8 +192,11 @@ final McpServer mcp = McpServer(
   name: 'my-app',
   version: '1.0.0',
   tools: <McpTool>[AddExpense(), CreateCategory()],
+  allowedOrigins: <String>['https://my.app'],
 );
 ```
+
+`allowedOrigins` lists your own sites. See [Checking the origin](#checking-the-origin).
 
 Then call `handle` from a route:
 
@@ -420,7 +423,7 @@ With `McpOAuth`, you give the client only the address, like `https://my.app/mcp`
 
 ### Tokens
 
-Implement `McpOAuthTokens`. `issue` makes a token after the user said yes. `verify` gives what a token stands for, like the user, or `null`. You choose the table. Keep only a hash of the token:
+Implement `McpOAuthTokens`. `issue` makes a token after the user said yes. `verify` gives what a token stands for, like the user, or `null`. The MCP route gets this value back from `authenticate`. You choose the table. Keep only a hash of the token:
 
 ```dart
 class McpTokens extends McpOAuthTokens {
@@ -461,9 +464,9 @@ class McpRouter extends Router {
 }
 
 Future<DoxResponse> handleMcp(DoxRequest req) async {
-  Object? user = await oauth.authenticate(req);
+  User? user = await oauth.authenticate(req) as User?;
   if (user == null) return oauth.unauthorized();
-  return mcp.handle(req, auth: user, scope: '$user');
+  return mcp.handle(req, auth: user, scope: 'user:${user.id}');
 }
 ```
 
@@ -473,7 +476,7 @@ The `codes` option is a [cache store](https://dartondox.dev/latest/packages/cach
 
 ### The consent page
 
-The client sends the browser to `<issuer>/oauth/authorize`. This page is yours. The person signs in there the way your app always does, and then says yes or no. The page gets `client_id`, `redirect_uri`, `state`, `code_challenge` and `resource` in the query.
+The client sends the browser to `<issuer>/oauth/authorize`. This page is yours. The person signs in there the way your app always does, and then says yes or no. The page gets `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and `resource` in the query.
 
 Use `verifyClient` to get the client for the page. It throws when the client or the redirect address is wrong:
 
@@ -494,6 +497,7 @@ String url = await oauth.approve(
   clientId: clientId,
   redirectUri: redirectUri,
   codeChallenge: codeChallenge,
+  codeChallengeMethod: codeChallengeMethod,
   state: state,
   resource: resource,
 );
@@ -533,14 +537,14 @@ McpOAuth(
 );
 ```
 
-- `allowedClientHosts`: accept clients from these hosts only. By default, any public host works.
+- `allowedClientHosts`: load client documents from these hosts only. By default, any public host works. It does not block clients that register at `POST /oauth/register`.
 - `maxClientFetches`: how many documents one isolate loads at the same time. The default is 8. When all are busy, a new client is refused at once.
 - `maxClientFetchesPerHost`: how many of these loads can go to one host. The default is 2, so one slow host can not use all the slots.
 - `McpOAuthHttpFetcher(maxFetchesPerAddress:)`: how many loads can go to one IP address. The default is 2.
 
 ## Checking the origin
 
-A web page on another site can try to call your MCP server from the browser of a user. This matters most for a server on `localhost` or a private network. Set `allowedOrigins` to stop it:
+A web page on another site can try to call your MCP server from the browser of a user. Always set `allowedOrigins` to your own sites to stop it, also for a server on `localhost` or a private network:
 
 ```dart
 McpServer(
@@ -598,7 +602,7 @@ This section is for special cases. Most apps do not need it.
 - `context.answer` also gives `null` for an answer the server can not read, like a wrong type or a form that fails the DTO rules. So the tool asks again.
 - A question the client can not show gets an error that names the missing capability. Check `context.clientCapabilities` first if the tool can work without the question.
 - Two inputs with the same question in one `inputRequired` list throw an `ArgumentError`. Give each one its own message.
-- A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`. For an `http` address on the same computer, the port may differ.
+- A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`. For a client with a metadata document, the port of an `http` address on the same computer may differ.
 - `issue` may throw an `McpOAuthException`, like `access_denied` when a person has too many clients. The client gets it.
 - The OAuth routes answer any origin and read no cookie. They skip the CORS list of the app.
 - A batch of more than 50 messages (from an older client) gets `400` with `-32600`, and no message runs.
