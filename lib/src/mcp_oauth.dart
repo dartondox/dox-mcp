@@ -143,6 +143,7 @@ class McpOAuth {
     McpOAuthClientFetcher clientFetcher = const McpOAuthHttpFetcher(),
     Set<String>? allowedClientHosts,
     this.clientCacheMaxAge = const Duration(minutes: 5),
+    this.maxClientFetches = 8,
   }) : issuer = issuer.replaceFirst(RegExp(r'/+$'), ''),
        _now = now ?? DateTime.now,
        _fetcher = clientFetcher,
@@ -204,6 +205,13 @@ class McpOAuth {
   /// The longest time a loaded client metadata document is kept in memory.
   /// A shorter `Cache-Control: max-age` wins. Default: 5 minutes.
   final Duration clientCacheMaxAge;
+
+  /// How many client metadata documents each isolate may load at the same
+  /// time. When all are busy, a new address gets `invalid_client` at once
+  /// (it does not wait). Two lookups of the same address count once. This
+  /// stops a caller from making the server open many slow connections.
+  /// Default: 8.
+  final int maxClientFetches;
 
   final McpOAuthClientFetcher _fetcher;
 
@@ -673,7 +681,11 @@ class McpOAuth {
       _clientCache.remove(url);
     }
     // one fetch at a time for the same address
-    return _clientLoads[url] ??= _loadOnce(url, uri);
+    Future<McpOAuthClient>? running = _clientLoads[url];
+    if (running != null) return running;
+    // all slots busy: say no at once, never wait in a queue
+    if (_clientLoads.length >= maxClientFetches) throw _badDocument;
+    return _clientLoads[url] = _loadOnce(url, uri);
   }
 
   Future<McpOAuthClient> _loadOnce(String url, Uri uri) async {

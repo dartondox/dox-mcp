@@ -302,6 +302,11 @@ McpOAuth(
 );
 ```
 
+Two options stop abuse of the document loads:
+
+- `allowedClientHosts`: load documents only from these hosts.
+- `maxClientFetches` (default 8): how many documents each isolate loads at the same time. When all are busy, a new address gets `invalid_client` at once. It does not wait.
+
 On the consent page, also show the host of a document `client_id`. The client chooses its own name, so the host is the part the person can trust.
 
 | Route | What it does |

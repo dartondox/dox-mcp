@@ -167,7 +167,7 @@ Clients get a `client_id` in one of two ways:
 - New clients use a client metadata document (MCP spec `2026-07-28`): the `client_id` is an `https` address of a JSON file with `client_id`, `client_name` and `redirect_uris`. `dox_mcp` loads it (public hosts only, no redirects, 5 KB max, kept up to `clientCacheMaxAge`, 5 minutes) and checks it. A bad one gives `invalid_client`.
 - Older clients use `POST /oauth/register`. It still works.
 
-`allowedClientHosts: <String>{'claude.ai'}` on `McpOAuth` accepts documents from those hosts only. The default (`null`) accepts any public host. Tests pass `clientFetcher:` (a `McpOAuthClientFetcher`) to give fake documents without the network.
+`allowedClientHosts: <String>{'claude.ai'}` on `McpOAuth` accepts documents from those hosts only. The default (`null`) accepts any public host. `maxClientFetches` (default 8) caps how many documents each isolate loads at the same time; past it, a new address gets `invalid_client` at once. These two options are the abuse controls. Tests pass `clientFetcher:` (a `McpOAuthClientFetcher`) to give fake documents without the network.
 
 ### 6. Sessions
 

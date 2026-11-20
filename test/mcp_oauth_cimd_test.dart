@@ -83,6 +83,41 @@ final McpOAuth oauth = McpOAuth(
   now: readFakeNow,
 );
 
+/// Holds every fetch until [release] is called.
+class BlockingFetcher extends McpOAuthClientFetcher {
+  final List<String> calls = <String>[];
+  Completer<void> gate = Completer<void>();
+  bool fail = false;
+
+  void release() {
+    gate.complete();
+    gate = Completer<void>();
+  }
+
+  @override
+  Future<McpOAuthFetchedDocument> fetch(Uri url) async {
+    calls.add('$url');
+    await gate.future;
+    if (fail) throw const McpOAuthFetchException('down');
+    return McpOAuthFetchedDocument(
+      statusCode: 200,
+      body: jsonEncode(goodDoc('$url')),
+      contentType: 'application/json',
+      cacheControl: 'no-store',
+    );
+  }
+}
+
+final BlockingFetcher blocking = BlockingFetcher();
+
+final McpOAuth capped = McpOAuth(
+  issuer: 'https://app.test',
+  tokens: tokens,
+  key: utf8.encode('o' * 32),
+  clientFetcher: blocking,
+  maxClientFetches: 2,
+);
+
 final McpOAuth limited = McpOAuth(
   issuer: 'https://app.test',
   tokens: tokens,
@@ -599,6 +634,40 @@ void main() {
       ]);
       expect(both, hasLength(2));
       expect(fetcher.calls, hasLength(1));
+    });
+  });
+
+  group('maxClientFetches', () {
+    test('a fetch past the cap fails at once, a slot frees after', () async {
+      String a = 'https://a.example/c';
+      String b = 'https://b.example/c';
+      String c = 'https://c.example/c';
+      Future<McpOAuthClient> first = capped.findClient(a);
+      Future<McpOAuthClient> second = capped.findClient(b);
+      // the same address shares the running load, it takes no new slot
+      Future<McpOAuthClient> again = capped.findClient(a);
+      await expectLater(capped.findClient(c), oauthError('invalid_client'));
+      expect(blocking.calls, <String>[a, b]);
+
+      // a load that finishes frees its slot
+      blocking.release();
+      expect((await first).id, a);
+      expect((await second).id, b);
+      expect((await again).id, a);
+
+      // a load that fails frees its slot too
+      blocking.fail = true;
+      Future<McpOAuthClient> failing1 = capped.findClient(a);
+      Future<McpOAuthClient> failing2 = capped.findClient(b);
+      await expectLater(capped.findClient(c), oauthError('invalid_client'));
+      blocking.release();
+      await expectLater(failing1, oauthError('invalid_client'));
+      await expectLater(failing2, oauthError('invalid_client'));
+
+      blocking.fail = false;
+      Future<McpOAuthClient> now = capped.findClient(c);
+      blocking.release();
+      expect((await now).id, c);
     });
   });
 
