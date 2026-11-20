@@ -29,9 +29,15 @@ class McpOAuthFetchedDocument {
 /// body that is too big. The text is for logs only. The client never sees
 /// it.
 class McpOAuthFetchException implements Exception {
-  const McpOAuthFetchException(this.message);
+  const McpOAuthFetchException(this.message, {this.hostFailed = false});
 
   final String message;
+
+  /// True when the host itself failed: not found, not a public address, no
+  /// connection, or no answer in time. [McpOAuth] then loads nothing from
+  /// that host for a short time. False when the host answered, like a body
+  /// that is too big.
+  final bool hostFailed;
 
   @override
   String toString() => 'McpOAuthFetchException: $message';
@@ -86,7 +92,11 @@ class McpOAuthHttpFetcher extends McpOAuthClientFetcher {
     try {
       return await _get(client, url).timeout(timeout);
     } on TimeoutException {
-      throw const McpOAuthFetchException('Timed out');
+      throw const McpOAuthFetchException('Timed out', hostFailed: true);
+    } on SocketException {
+      throw const McpOAuthFetchException('No connection', hostFailed: true);
+    } on TlsException {
+      throw const McpOAuthFetchException('TLS failed', hostFailed: true);
     } finally {
       client.close(force: true);
     }
@@ -122,10 +132,16 @@ class McpOAuthHttpFetcher extends McpOAuthClientFetcher {
     try {
       found = await InternetAddress.lookup(url.host).timeout(connectTimeout);
     } on Object {
-      throw const McpOAuthFetchException('The host was not found');
+      throw const McpOAuthFetchException(
+        'The host was not found',
+        hostFailed: true,
+      );
     }
     if (found.isEmpty || !found.every(isPublicAddress)) {
-      throw const McpOAuthFetchException('The host is not a public address');
+      throw const McpOAuthFetchException(
+        'The host is not a public address',
+        hostFailed: true,
+      );
     }
     // the address keeps the host name, so TLS sends it (SNI) and checks
     // the certificate for it

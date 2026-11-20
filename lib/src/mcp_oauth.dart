@@ -48,6 +48,12 @@ class McpOAuthClient {
 
   /// The only addresses a code may be sent to.
   final List<String> redirectUris;
+
+  /// The host of a document [id], like `claude.ai`. The client chooses its
+  /// own [name], so the consent page shows this host next to it: it is the
+  /// part the person can trust. Null for a signed client.
+  String? get host =>
+      McpOAuth.isClientIdUrl(id) ? Uri.tryParse(id)?.host : null;
 }
 
 /// A person said yes to a client. The app makes a token for it.
@@ -144,6 +150,7 @@ class McpOAuth {
     Set<String>? allowedClientHosts,
     this.clientCacheMaxAge = const Duration(minutes: 5),
     this.maxClientFetches = 8,
+    this.maxClientFetchesPerHost = 2,
   }) : issuer = issuer.replaceFirst(RegExp(r'/+$'), ''),
        _now = now ?? DateTime.now,
        _fetcher = clientFetcher,
@@ -172,6 +179,15 @@ class McpOAuth {
   /// How long a document is kept when its answer has no `Cache-Control`.
   /// [clientCacheMaxAge] still caps it.
   static const Duration clientCacheDefaultAge = Duration(minutes: 1);
+
+  /// How long an old document may still be used after its cache time, when
+  /// a new load fails or can not start (all slots busy, or the address or
+  /// host failed a short time ago).
+  static const Duration clientStaleAge = Duration(hours: 1);
+
+  /// How long a failed address, or a host that did not answer, is not
+  /// loaded again. Each isolate keeps this in memory.
+  static const Duration clientFailureAge = Duration(minutes: 1);
 
   // RFC 7636 4.1: 43 to 128 of these characters.
   static final RegExp _verifierShape = RegExp(r'^[A-Za-z0-9\-._~]{43,128}$');
@@ -213,10 +229,17 @@ class McpOAuth {
   /// Default: 8.
   final int maxClientFetches;
 
+  /// How many of the [maxClientFetches] loads may go to one host at the
+  /// same time. So one slow host can not take all slots. Default: 2.
+  final int maxClientFetchesPerHost;
+
   final McpOAuthClientFetcher _fetcher;
 
   // per isolate, oldest first
   final Map<String, _CachedClient> _clientCache = <String, _CachedClient>{};
+  // address or host -> no new load before this time
+  final Map<String, DateTime> _failedUrls = <String, DateTime>{};
+  final Map<String, DateTime> _failedHosts = <String, DateTime>{};
   final Map<String, Future<McpOAuthClient>> _clientLoads =
       <String, Future<McpOAuthClient>>{};
 
@@ -428,10 +451,10 @@ class McpOAuth {
   }
 
   /// The client, when [redirectUri] is one of its addresses. Like
-  /// [checkClient], but it also knows clients with a metadata document.
-  /// The consent page shows its name, and the host of [redirectUri].
-  /// Throws when the client or address is wrong: then never send the
-  /// browser anywhere.
+  /// [checkClient], but it loads a client metadata document when it is not
+  /// in memory yet. The consent page shows its name, its [McpOAuthClient.host]
+  /// and the host of [redirectUri]. Throws when the client or address is
+  /// wrong: then never send the browser anywhere.
   Future<McpOAuthClient> verifyClient(
     String clientId,
     String redirectUri,
@@ -469,10 +492,14 @@ class McpOAuth {
   /// page shows its name. Throws when the client or address is wrong: then
   /// never send the browser anywhere.
   ///
-  /// It knows signed clients only. Use [verifyClient] to also know clients
-  /// with a metadata document.
+  /// It is not async, so it can not wait for a client metadata document.
+  /// It uses the document when this isolate has it in memory. Else it
+  /// starts the load and throws `invalid_client`: a new try a moment later
+  /// finds it. Prefer [verifyClient], which waits for the load.
   McpOAuthClient checkClient(String clientId, String redirectUri) {
-    McpOAuthClient found = client(clientId);
+    McpOAuthClient found = isClientIdUrl(clientId)
+        ? _documentClientNow(clientId)
+        : client(clientId);
     _checkRedirect(found, redirectUri);
     return found;
   }
@@ -552,9 +579,9 @@ class McpOAuth {
     return _denied(redirectUri, state);
   }
 
-  /// The person said no. Returns the address to send the browser to. It
-  /// knows signed clients only: use [denyClient] to also know clients
-  /// with a metadata document.
+  /// The person said no. Returns the address to send the browser to. For a
+  /// client metadata document it has the same limit as [checkClient]:
+  /// prefer [denyClient].
   String deny({
     required String clientId,
     required String redirectUri,
@@ -655,7 +682,8 @@ class McpOAuth {
     'client_secret_jwt',
   };
 
-  Future<McpOAuthClient> _documentClient(String url) {
+  /// Checks the address rules of a document [url], and the host list.
+  Uri _documentUri(String url) {
     if (!isValidClientIdUrl(url)) {
       throw const McpOAuthException(
         'invalid_client',
@@ -672,25 +700,105 @@ class McpOAuth {
     }
     // draft 10.1: a client may not use the address of this server
     if (url == issuer || url == resource) throw _badDocument;
+    return uri;
+  }
 
+  /// The cached document of [url], fresh or old, or null. It forgets one
+  /// that is too old to use.
+  _CachedClient? _cached(String url) {
     _CachedClient? cached = _clientCache[url];
-    if (cached != null) {
-      if (_now().isBefore(cached.expires)) {
-        return Future<McpOAuthClient>.value(cached.client);
-      }
+    if (cached != null && !_now().isBefore(cached.staleUntil)) {
       _clientCache.remove(url);
+      return null;
+    }
+    return cached;
+  }
+
+  Future<McpOAuthClient> _documentClient(String url) {
+    Uri uri = _documentUri(url);
+    _CachedClient? cached = _cached(url);
+    if (cached != null && _now().isBefore(cached.expires)) {
+      return Future<McpOAuthClient>.value(cached.client);
     }
     // one fetch at a time for the same address
     Future<McpOAuthClient>? running = _clientLoads[url];
     if (running != null) return running;
-    // all slots busy: say no at once, never wait in a queue
-    if (_clientLoads.length >= maxClientFetches) throw _badDocument;
-    return _clientLoads[url] = _loadOnce(url, uri);
+    if (!_mayLoad(url, _hostKey(uri))) {
+      // no new load now: an old document still works
+      if (cached != null) return Future<McpOAuthClient>.value(cached.client);
+      throw _badDocument;
+    }
+    return _clientLoads[url] = _loadOnce(url, uri, cached?.client);
   }
 
-  Future<McpOAuthClient> _loadOnce(String url, Uri uri) async {
+  /// [checkClient] can not wait: the document in memory (fresh or old), or
+  /// it starts the load and throws.
+  McpOAuthClient _documentClientNow(String url) {
+    _documentUri(url);
+    _CachedClient? cached = _cached(url);
+    if (cached != null && _now().isBefore(cached.expires)) {
+      return cached.client;
+    }
+    try {
+      // the next call finds it in memory
+      _documentClient(url).ignore();
+    } on McpOAuthException {
+      // no load now; the old document or the error below
+    }
+    if (cached != null) return cached.client;
+    throw const McpOAuthException(
+      'invalid_client',
+      'The client metadata document is not loaded yet. Try again, '
+          'or use verifyClient',
+    );
+  }
+
+  /// Host and port: a dead port of a host does not block its other ports.
+  static String _hostKey(Uri uri) => '${uri.host}:${uri.port}';
+
+  /// False when a new load of [url] must not start now: the address or
+  /// [host] failed a short time ago, or all slots (or the slots of the
+  /// host) are busy. Then it says no at once, it never waits in a queue.
+  bool _mayLoad(String url, String host) {
+    if (_failedRecently(_failedUrls, url) ||
+        _failedRecently(_failedHosts, host) ||
+        _clientLoads.length >= maxClientFetches) {
+      return false;
+    }
+    int sameHost = 0;
+    for (String running in _clientLoads.keys) {
+      if (_hostKey(Uri.parse(running)) == host) sameHost++;
+    }
+    return sameHost < maxClientFetchesPerHost;
+  }
+
+  bool _failedRecently(Map<String, DateTime> failed, String key) {
+    DateTime? until = failed[key];
+    if (until == null) return false;
+    if (_now().isBefore(until)) return true;
+    failed.remove(key);
+    return false;
+  }
+
+  void _remember(Map<String, DateTime> failed, String key) {
+    failed.remove(key);
+    if (failed.length >= clientCacheSize) failed.remove(failed.keys.first);
+    failed[key] = _now().add(clientFailureAge);
+  }
+
+  Future<McpOAuthClient> _loadOnce(
+    String url,
+    Uri uri,
+    McpOAuthClient? stale,
+  ) async {
     try {
       return await _loadDocument(url, uri);
+    } on McpOAuthException {
+      // a failure is kept a short time, so a bad address is not loaded on
+      // every request
+      _remember(_failedUrls, url);
+      if (stale != null) return stale;
+      rethrow;
     } finally {
       // the callers already wait for this future
       unawaited(_clientLoads.remove(url));
@@ -701,6 +809,10 @@ class McpOAuth {
     McpOAuthFetchedDocument fetched;
     try {
       fetched = await _fetcher.fetch(uri);
+    } on McpOAuthFetchException catch (error) {
+      // the host itself failed: skip all its addresses a short time
+      if (error.hostFailed) _remember(_failedHosts, _hostKey(uri));
+      throw _badDocument;
     } on Object {
       // never give the inside error text to the client
       throw _badDocument;
@@ -717,11 +829,17 @@ class McpOAuth {
     if (json is! Map<String, dynamic>) throw _badDocument;
     McpOAuthClient client = _documentToClient(url, json);
     Duration age = _cacheAge(fetched.cacheControl);
+    _clientCache.remove(url);
     if (age > Duration.zero) {
       if (_clientCache.length >= clientCacheSize) {
         _clientCache.remove(_clientCache.keys.first);
       }
-      _clientCache[url] = _CachedClient(client, _now().add(age));
+      DateTime expires = _now().add(age);
+      _clientCache[url] = _CachedClient(
+        client,
+        expires,
+        expires.add(clientStaleAge),
+      );
     }
     return client;
   }
@@ -977,8 +1095,13 @@ class McpOAuth {
 }
 
 class _CachedClient {
-  const _CachedClient(this.client, this.expires);
+  const _CachedClient(this.client, this.expires, this.staleUntil);
 
   final McpOAuthClient client;
+
+  /// Fresh until then.
   final DateTime expires;
+
+  /// Used only when a new load fails or can not start, until then.
+  final DateTime staleUntil;
 }
