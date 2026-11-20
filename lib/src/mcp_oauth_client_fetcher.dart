@@ -29,12 +29,25 @@ class McpOAuthFetchedDocument {
 /// body that is too big. The text is for logs only. The client never sees
 /// it.
 class McpOAuthFetchException implements Exception {
-  const McpOAuthFetchException(this.message);
+  const McpOAuthFetchException(this.message, {this.hostFailed = false});
 
   final String message;
 
+  /// True when the host itself failed: not found, not a public address, no
+  /// connection, or no answer in time. [McpOAuth] then loads nothing from
+  /// that host for a short time. False when the host answered, like a body
+  /// that is too big.
+  final bool hostFailed;
+
   @override
   String toString() => 'McpOAuthFetchException: $message';
+}
+
+/// The fetcher has no free slot now, like [McpOAuthHttpFetcher] with
+/// [McpOAuthHttpFetcher.maxFetchesPerAddress] loads to the same address.
+/// Nothing failed: [McpOAuth] does not remember it.
+class McpOAuthFetchBusyException extends McpOAuthFetchException {
+  const McpOAuthFetchBusyException(super.message);
 }
 
 /// Loads a client metadata document (a `client_id` that is an `https`
@@ -61,11 +74,15 @@ abstract class McpOAuthClientFetcher {
 /// - No proxy, no redirects, no cookies.
 /// - [connectTimeout] for the connection, [timeout] for all of it.
 /// - It reads at most [maxBytes] of the body. A bigger body is an error.
+/// - At most [maxFetchesPerAddress] loads go to one IP address at the same
+///   time (per isolate). So many host names on one slow server can not take
+///   all the slots of [McpOAuth.maxClientFetches].
 class McpOAuthHttpFetcher extends McpOAuthClientFetcher {
   const McpOAuthHttpFetcher({
     this.connectTimeout = const Duration(seconds: 3),
     this.timeout = const Duration(seconds: 5),
     this.maxBytes = 5120,
+    this.maxFetchesPerAddress = 2,
   });
 
   final Duration connectTimeout;
@@ -74,21 +91,34 @@ class McpOAuthHttpFetcher extends McpOAuthClientFetcher {
   /// The biggest body it reads. The draft asks for about 5 KB.
   final int maxBytes;
 
+  /// How many loads may go to one IP address at the same time. Past it, a
+  /// load throws [McpOAuthFetchBusyException] at once. Default: 2.
+  final int maxFetchesPerAddress;
+
+  /// The loads per IP address, in this isolate.
+  static final McpOAuthAddressSlots addressSlots = McpOAuthAddressSlots();
+
   @override
   Future<McpOAuthFetchedDocument> fetch(Uri url) async {
     if (url.scheme != 'https') {
       throw const McpOAuthFetchException('Only https is fetched');
     }
+    _Connection connection = _Connection(this);
     HttpClient client = HttpClient()
       ..connectionTimeout = connectTimeout
       ..findProxy = _direct
-      ..connectionFactory = _connect;
+      ..connectionFactory = connection.connect;
     try {
       return await _get(client, url).timeout(timeout);
     } on TimeoutException {
-      throw const McpOAuthFetchException('Timed out');
+      throw const McpOAuthFetchException('Timed out', hostFailed: true);
+    } on SocketException {
+      throw const McpOAuthFetchException('No connection', hostFailed: true);
+    } on TlsException {
+      throw const McpOAuthFetchException('TLS failed', hostFailed: true);
     } finally {
       client.close(force: true);
+      connection.release();
     }
   }
 
@@ -111,26 +141,6 @@ class McpOAuthHttpFetcher extends McpOAuthClientFetcher {
   }
 
   static String _direct(Uri url) => 'DIRECT';
-
-  /// Looks up the host, checks every address, then connects to the first.
-  Future<ConnectionTask<Socket>> _connect(
-    Uri url,
-    String? proxyHost,
-    int? proxyPort,
-  ) async {
-    List<InternetAddress> found;
-    try {
-      found = await InternetAddress.lookup(url.host).timeout(connectTimeout);
-    } on Object {
-      throw const McpOAuthFetchException('The host was not found');
-    }
-    if (found.isEmpty || !found.every(isPublicAddress)) {
-      throw const McpOAuthFetchException('The host is not a public address');
-    }
-    // the address keeps the host name, so TLS sends it (SNI) and checks
-    // the certificate for it
-    return SecureSocket.startConnect(found.first, url.port);
-  }
 
   /// Reads [stream] into bytes. Throws when it has more than [maxBytes].
   /// It stops reading at once then.
@@ -195,5 +205,87 @@ class McpOAuthHttpFetcher extends McpOAuthClientFetcher {
     }
     if (b[0] == 0x20 && b[1] == 0x02) return false;
     return true;
+  }
+}
+
+/// The loads per IP address. [McpOAuthHttpFetcher] takes a slot before it
+/// connects and gives it back when the load ends.
+class McpOAuthAddressSlots {
+  final Map<String, int> _loads = <String, int>{};
+
+  /// How many loads go to [address] now.
+  int loads(String address) => _loads[address] ?? 0;
+
+  /// Takes a slot for [address]. False when it has [max] already.
+  bool take(String address, int max) {
+    int now = loads(address);
+    if (now >= max) return false;
+    _loads[address] = now + 1;
+    return true;
+  }
+
+  /// Gives back a slot of [address].
+  void release(String address) {
+    int now = loads(address) - 1;
+    if (now > 0) {
+      _loads[address] = now;
+    } else {
+      _loads.remove(address);
+    }
+  }
+}
+
+/// One load of [McpOAuthHttpFetcher]: it holds the slot of its address.
+class _Connection {
+  _Connection(this.fetcher);
+
+  final McpOAuthHttpFetcher fetcher;
+  String? _address;
+
+  /// Looks up the host, checks every address, takes a slot, then connects
+  /// to the first address.
+  Future<ConnectionTask<Socket>> connect(
+    Uri url,
+    String? proxyHost,
+    int? proxyPort,
+  ) async {
+    List<InternetAddress> found;
+    try {
+      found = await InternetAddress.lookup(url.host)
+          .timeout(fetcher.connectTimeout);
+    } on Object {
+      throw const McpOAuthFetchException(
+        'The host was not found',
+        hostFailed: true,
+      );
+    }
+    if (found.isEmpty || !found.every(McpOAuthHttpFetcher.isPublicAddress)) {
+      throw const McpOAuthFetchException(
+        'The host is not a public address',
+        hostFailed: true,
+      );
+    }
+    String address = found.first.address;
+    if (_address != address) {
+      if (!McpOAuthHttpFetcher.addressSlots.take(
+        address,
+        fetcher.maxFetchesPerAddress,
+      )) {
+        throw const McpOAuthFetchBusyException('This address is busy');
+      }
+      release();
+      _address = address;
+    }
+    // the address keeps the host name, so TLS sends it (SNI) and checks
+    // the certificate for it
+    return SecureSocket.startConnect(found.first, url.port);
+  }
+
+  /// Gives back the slot, once.
+  void release() {
+    String? address = _address;
+    if (address == null) return;
+    _address = null;
+    McpOAuthHttpFetcher.addressSlots.release(address);
   }
 }

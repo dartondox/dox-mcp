@@ -634,6 +634,26 @@ void main() {
       }, session: session)).expectStatus(202).expectBody('');
     });
 
+    test('a batch of 50 works, 51 is refused', () async {
+      List<Object> pings(int count) => <Object>[
+        for (int i = 0; i < count; i++) request(100 + i, 'ping'),
+      ];
+      TestResponse ok = await post(
+        'ann',
+        pings(McpServer.maxBatchSize),
+        session: session,
+      );
+      ok.expectStatus(200);
+      expect(ok.json as List<dynamic>, hasLength(50));
+      TestResponse big = await post(
+        'ann',
+        pings(McpServer.maxBatchSize + 1),
+        session: session,
+      );
+      big.expectStatus(400);
+      expect(big.json['error']['code'], JsonRpcCode.invalidRequest);
+    });
+
     test('bad JSON, bad messages and other content types', () async {
       TestResponse parse = await client.post(
         '/mcp/ann',

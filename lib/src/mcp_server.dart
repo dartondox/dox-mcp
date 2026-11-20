@@ -83,6 +83,10 @@ class McpServer {
   /// in `_meta`.
   static const List<String> statelessProtocolVersions = <String>['2026-07-28'];
 
+  /// The most messages in one batch (protocols before 2026-07-28). A
+  /// bigger batch gets `400` with `-32600`, and none of it runs.
+  static const int maxBatchSize = 50;
+
   /// Every protocol version this server speaks, newest first.
   static const List<String> supportedProtocolVersions = <String>[
     ...statelessProtocolVersions,
@@ -187,6 +191,13 @@ class McpServer {
         400,
         JsonRpcCode.invalidRequest,
         'Invalid Request: empty batch',
+      );
+    }
+    if (messages.length > maxBatchSize) {
+      return _rpcErrorResponse(
+        400,
+        JsonRpcCode.invalidRequest,
+        'Invalid Request: a batch may have at most $maxBatchSize messages',
       );
     }
     for (Object? message in messages) {

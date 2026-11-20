@@ -136,7 +136,7 @@ Route.match(<String>['GET', 'POST', 'DELETE'], '/mcp/{token}', (DoxRequest req) 
 
 1. Implement `McpOAuthTokens`: `Future<String> issue(McpOAuthGrant grant)` makes a token (keep only a hash of it), `Future<Object?> verify(String token)` returns what it stands for (like a user), or null. `issue` may throw `McpOAuthException` (for example `access_denied`).
 2. Serve a consent page at `<issuer>/oauth/authorize` (or pass `authorizePage`). It reads `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and `resource` from the query. The person signs in the way your app always does.
-3. Make a route of your own, behind your login, that answers the page. On yes, call `await oauth.approve(subject:, clientId:, redirectUri:, codeChallenge:, state:, resource:)`. It returns the address to send the browser to. On no, call `await oauth.denyClient(clientId:, redirectUri:, state:)`. `await oauth.verifyClient(clientId, redirectUri)` gives the client for the page and throws when it is wrong. Use these async methods, not `checkClient` and `deny`: only the async ones know clients with a metadata document.
+3. Make a route of your own, behind your login, that answers the page. On yes, call `await oauth.approve(subject:, clientId:, redirectUri:, codeChallenge:, state:, resource:)`. It returns the address to send the browser to. On no, call `await oauth.denyClient(clientId:, redirectUri:, state:)`. `await oauth.verifyClient(clientId, redirectUri)` gives the client for the page and throws when it is wrong. Use these async methods, not `checkClient` and `deny`: those can not wait for a metadata document, so they throw `invalid_client` until it is in memory.
 
 ```dart
 final McpOAuth oauth = McpOAuth(
@@ -167,7 +167,7 @@ Clients get a `client_id` in one of two ways:
 - New clients use a client metadata document (MCP spec `2026-07-28`): the `client_id` is an `https` address of a JSON file with `client_id`, `client_name` and `redirect_uris`. `dox_mcp` loads it (public hosts only, no redirects, 5 KB max, kept up to `clientCacheMaxAge`, 5 minutes) and checks it. A bad one gives `invalid_client`.
 - Older clients use `POST /oauth/register`. It still works.
 
-`allowedClientHosts: <String>{'claude.ai'}` on `McpOAuth` accepts documents from those hosts only. The default (`null`) accepts any public host. `maxClientFetches` (default 8) caps how many documents each isolate loads at the same time; past it, a new address gets `invalid_client` at once. These two options are the abuse controls. Tests pass `clientFetcher:` (a `McpOAuthClientFetcher`) to give fake documents without the network.
+`allowedClientHosts: <String>{'claude.ai'}` on `McpOAuth` accepts documents from those hosts only. The default (`null`) accepts any public host. `maxClientFetches` (default 8) caps how many documents each isolate loads at the same time; past it, a new address gets `invalid_client` at once. `maxClientFetchesPerHost` (default 2) caps the loads to one host and port. These two options are the abuse controls. Tests pass `clientFetcher:` (a `McpOAuthClientFetcher`) to give fake documents without the network.
 
 ### 6. Sessions
 
@@ -218,7 +218,7 @@ Inputs: `McpInput.confirm` (`bool`), `.text` (`String`), `.number` (`num`), `.ch
 - Put the route that calls `oauth.approve` behind CSRF protection, or another site can make a signed-in person say yes.
 - On the consent page, show the host of `redirect_uri` and HTML-escape the client name. The client chooses the name.
 - A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`, with no `#fragment`. For a document client, the port of an `http` loopback address may differ.
-- On the consent page, also show the host of a document `client_id` (an `https` address). The name is chosen by the client.
+- On the consent page, also show `client.host` (the host of a document `client_id`, null for a signed client). The name is chosen by the client.
 - To revoke an OAuth client, delete its token. There is no refresh token.
 - Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`. Others get `-32601`. An unknown tool is JSON-RPC error `-32602`.
 - A tool that throws becomes a tool result with `isError: true`. The client gets `Tool failed`, unless `APP_ENV` is `development` or `local`. A tool that wants the model to see a message must return `McpToolResult.error(...)`. `onToolError` gets the full error, for logs.

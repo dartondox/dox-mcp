@@ -127,6 +127,7 @@ Input validation error: Invalid arguments for tool create_category: name: The na
 | --- | --- |
 | `POST` `initialize` | `200` with the server info and an `Mcp-Session-Id` header |
 | `POST` a request with a valid `Mcp-Session-Id` | `200` with the JSON-RPC response (a list for a batch) |
+| `POST` a batch with more than 50 messages (`McpServer.maxBatchSize`) | `400`, `-32600`. No message runs. |
 | `POST` only notifications or responses | `202`, no body |
 | `POST` with no session id | `400` |
 | `POST` with an unknown or ended session id, or one of another `scope` | `404`, so the client starts a new session |
@@ -294,7 +295,7 @@ For another kind of session, implement `McpSessions`.
 
 1. **Tokens.** Implement `McpOAuthTokens`: `issue` makes a token for a grant, `verify` gives what a token stands for (like the user id), or null. You choose the table and how a token is revoked. Keep only a hash of it.
 2. **The consent page.** At `<issuer>/oauth/authorize` (or `authorizePage:`). It reads `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and `resource` from the query. The person signs in there the way your app always does.
-3. **The yes.** Your page calls your own route, with your own login. That route calls `oauth.approve(subject: ...)` and gives the page the address to send the browser to. On no, `await oauth.denyClient(...)`. `await oauth.verifyClient(clientId, redirectUri)` gives the client's name for the page. Use these async methods: they know both kinds of clients (see below). The old `checkClient` and `deny` still work, but only for clients from `/oauth/register`.
+3. **The yes.** Your page calls your own route, with your own login. That route calls `oauth.approve(subject: ...)` and gives the page the address to send the browser to. On no, `await oauth.denyClient(...)`. `await oauth.verifyClient(clientId, redirectUri)` gives the client's name for the page. Use these async methods: they know both kinds of clients (see below). The old `checkClient` and `deny` also know both kinds of clients. They are not async, so they can not wait for a client metadata document. If the document is not in memory, they start the load and throw `invalid_client`. A new try a moment later works. Use the async methods in new code.
 
 On the consent page:
 
@@ -339,7 +340,11 @@ Loading the document is safe by default:
 - Only `https`, with a path, and no user name, password or `#fragment` in the address.
 - The host must be a public address. Inside addresses (loopback, private, link-local, CGNAT, multicast and others) are refused. The server connects to the address it checked, so a second DNS answer can not change it.
 - No redirects. 3 seconds to connect, 5 seconds in all. At most 5 KB. The answer must be JSON.
-- Each isolate keeps a document in memory for its `Cache-Control: max-age`, at most `clientCacheMaxAge` (5 minutes). With no `max-age`, 1 minute. Failures are never kept.
+- Each isolate keeps a document in memory for its `Cache-Control: max-age`, at most `clientCacheMaxAge` (5 minutes). With no `max-age`, 1 minute. With `no-store`, it is not kept.
+- When the host gives no answer to a new load (a timeout, no connection, or a `5xx` status), the old document stays in use for 1 more hour (`McpOAuth.clientStaleAge`). A real answer (like `404`, or a changed document) replaces the old document at once.
+- When all slots are busy, the old document stays in use for 5 more minutes (`McpOAuth.clientBusyStaleAge`).
+- A document with `no-store`, `no-cache` or `max-age=0` is kept for 1 minute only for `checkClient` and `deny` (`McpOAuth.clientHandOffAge`), so a consent page that uses them works.
+- A failure is kept for 1 minute (`McpOAuth.clientFailureAge`). In that time, the server does not load the address again. If the host itself fails (not found, no connection, no answer in time), the server does not load any address on that host and port for 1 minute.
 
 To accept only some clients, list their hosts. By default (`null`), any public host works:
 
@@ -351,12 +356,21 @@ McpOAuth(
 );
 ```
 
-Two options stop abuse of the document loads:
+Three options stop abuse of the document loads:
 
 - `allowedClientHosts`: load documents only from these hosts.
-- `maxClientFetches` (default 8): how many documents each isolate loads at the same time. When all are busy, a new address gets `invalid_client` at once. It does not wait.
+- `maxClientFetches` (default 8): how many documents each isolate loads at the same time. When all are busy, a new address gets `invalid_client` at once. It does not wait. A known client gets its old document.
+- `maxClientFetchesPerHost` (default 2): how many of these loads can go to one host and port. One slow host can not use all the slots.
+- `McpOAuthHttpFetcher(maxFetchesPerAddress:)` (default 2): how many loads can go to one IP address. Many host names on one slow server can not use all the slots.
 
-On the consent page, also show the host of a document `client_id`. The client chooses its own name, so the host is the part the person can trust.
+On the consent page, also show `client.host` next to the name. It is the host of a document `client_id`, like `claude.ai`, and null for a signed client. The client chooses its own name, so the host is the part the person can trust.
+
+```dart
+McpOAuthClient client = await oauth.verifyClient(clientId, redirectUri);
+String from = client.host == null ? '' : ' (${client.host})';
+// HTML-escape both
+String title = 'Allow ${client.name}$from to use your account?';
+```
 
 | Route | What it does |
 | --- | --- |
