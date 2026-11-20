@@ -423,7 +423,9 @@ With `McpOAuth`, you give the client only the address, like `https://my.app/mcp`
 
 ### Tokens
 
-Implement `McpOAuthTokens`. `issue` makes a token after the user said yes. `verify` gives what a token stands for, like the user, or `null`. The MCP route gets this value back from `authenticate`. You choose the table. Keep only a hash of the token:
+Implement `McpOAuthTokens`. `issue` makes a token after the user said yes. `verify` gives what a token stands for, like the user, or `null`. The MCP route gets this value back from `authenticate`. You choose the table. Keep only a hash of the token.
+
+Keep MCP tokens apart from your other tokens, like in their own table or with their own type. `verify` must only accept a token that `issue` made. A normal API token must not work on the MCP route, and an MCP token must not work on your API.
 
 ```dart
 class McpTokens extends McpOAuthTokens {
@@ -474,6 +476,14 @@ Future<DoxResponse> handleMcp(DoxRequest req) async {
 
 The `codes` option is a [cache store](https://dartondox.dev/latest/packages/cache/) for the one-time codes. All isolates must share it, so use `file` on one server, or `redis` on many.
 
+Add a rate limit to the OAuth routes and the MCP route. Anyone can call `/oauth/token`, and each new `client_id` address makes the server load a file:
+
+```dart
+Route.middleware(<dynamic>[RateLimit(max: 30)], oauth.routes);
+```
+
+Put the same middleware on the MCP route. See [Rate limiting](https://dartondox.dev/latest/security/rate-limiting/).
+
 ### The consent page
 
 The client sends the browser to `<issuer>/oauth/authorize`. This page is yours. The person signs in there the way your app always does, and then says yes or no. The page gets `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and `resource` in the query.
@@ -517,14 +527,14 @@ String url = await oauth.denyClient(
 The consent page decides who gets access, so keep these rules:
 
 - Put the yes route behind your login and [CSRF protection](https://dartondox.dev/latest/security/csrf/). Without it, another site can make a signed-in person say yes.
-- Show the host of the `client_id` and of the redirect address. The client chooses its own name, so the host is the part a person can trust.
+- Show the host of the redirect address, and the host of the `client_id` when it is an `https` address. The client chooses its own name, so the host is the part a person can trust.
 - HTML-escape the client name before you print it.
 
 ### How clients sign in
 
 A client names itself with a client metadata document. Its `client_id` is an `https` address, like `https://claude.ai/oauth/mcp-oauth-client-metadata`. A JSON file at that address holds the name of the client and its redirect addresses. `dox_mcp` loads the file and checks it, so there is nothing to register and nothing to store.
 
-The server only loads small files from public hosts, and it follows no redirects. It keeps a loaded document for its `Cache-Control: max-age`, at most `clientCacheMaxAge`. If the host of a client does not answer, the server uses the last document for up to 1 hour. If the host answers with an error or a changed document, the change applies at once. A failed load is not tried again for 1 minute.
+The server only loads small files from public hosts, and it follows no redirects. Still, each new `client_id` address makes the server load a file, so keep the [rate limit](#routes) on the OAuth routes. It keeps a loaded document for its `Cache-Control: max-age`, at most `clientCacheMaxAge`. If the host of a client does not answer, the server uses the last document for up to 1 hour. If the host answers with an error or a changed document, the change applies at once. A failed load is not tried again for 1 minute.
 
 These options limit the loads:
 

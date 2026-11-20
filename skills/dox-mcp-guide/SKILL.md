@@ -184,7 +184,7 @@ For a kind of input this package does not have, extend `McpCustomInput<T>`: `met
 
 `McpOAuth` lets a client sign in by itself. You give the client only the address (like `https://my.app/mcp`). It does OAuth 2.1 with PKCE (no client secret, no refresh token). Your app does three things:
 
-1. Implement `McpOAuthTokens`: `Future<String> issue(McpOAuthGrant grant)` makes a token (keep only a hash of it), `Future<Object?> verify(String token)` returns what it stands for (like a user), or null. `grant` has `subject`, `client` and `redirectUri`. `issue` may throw `McpOAuthException` (for example `access_denied`).
+1. Implement `McpOAuthTokens`: `Future<String> issue(McpOAuthGrant grant)` makes a token (keep only a hash of it), `Future<Object?> verify(String token)` returns what it stands for (like a user), or null. Keep MCP tokens apart from your other tokens, like in their own table or with their own type. `verify` must only accept a token that `issue` made. A normal API token must not work on the MCP route, and an MCP token must not work on your API. `grant` has `subject`, `client` and `redirectUri`. `issue` may throw `McpOAuthException` (for example `access_denied`).
 2. Serve a consent page at `<issuer>/oauth/authorize` (or pass `authorizePage`). It reads `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and `resource` from the query. The person signs in the way your app always does. `await oauth.verifyClient(clientId, redirectUri)` gives the client (`id`, `name`, `host`, `redirectUris`) for the page and throws when it is wrong. Show `client.host` next to the name: the client chooses its name, not its host.
 3. Make a route of your own, behind your login, that answers the page. On yes, call `await oauth.approve(subject:, clientId:, redirectUri:, codeChallenge:, codeChallengeMethod:, state:, resource:)`. On no, call `await oauth.denyClient(clientId:, redirectUri:, state:)`. Both return the address to send the browser to.
 
@@ -232,10 +232,11 @@ Tests pass `clientFetcher:` (an `McpOAuthClientFetcher`) to give fake documents 
 - Never ask for a password or a key with a form. Use `McpInput.url`. `McpAccepted` for a URL only means the user agreed to open it, so check the result in the database. Never put a secret in the URL.
 - Two inputs with the same question in one `inputRequired` list throw an `ArgumentError`. An empty list throws too.
 - A question the client can not show gets an error that names the missing capability. Check `context.clientCapabilities` first if the tool can work without the question.
+- Add a rate limit to the OAuth routes and the MCP route. Anyone can call `/oauth/token`, and each new `client_id` address makes the server load a file `Route.middleware(<dynamic>[RateLimit(max: 30)], oauth.routes);`.
 - Call `oauth.routes()` in a router with no prefix. Clients look for `/.well-known/...` at the root.
 - The `codes` cache must be shared by all isolates (file on one host, Redis on many). The memory store breaks on many isolates.
 - Put the route that calls `oauth.approve` behind your login and CSRF protection, or another site can make a signed-in person say yes.
-- On the consent page, show the host of `client_id` and of `redirect_uri`, and HTML-escape the client name. The client chooses the name.
+- On the consent page: show `client.host` (the host of an `https` `client_id`) and the host of the redirect address. HTML-escape the client name. The client chooses the name.
 - Use the async `verifyClient` and `denyClient`, not `checkClient` and `deny`. The sync ones can not wait for a metadata document, so they throw `invalid_client` until it is in memory.
 - A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`, with no `#fragment`. For a client with a metadata document, the port of an `http` address on the same computer may differ.
 - To revoke an OAuth client, delete its token. There is no refresh token.

@@ -62,7 +62,7 @@ class AddExpense extends McpTool {
 
 A small tool can be a function, with `McpTool.of`. A tool can also take a `@Dto` class as its input, with `McpDtoTool<T>`.
 
-Return `McpToolResult.error('...')` for an error the model can fix. If a tool throws, the client only gets `Tool failed`, and `onToolError` on the server gets the real error.
+Return `McpToolResult.error('...')` for an error the model can fix. If a tool throws, the client gets `Tool failed` (the real text only when `APP_ENV` is `development` or `local`), and `onToolError` on the server gets the real error.
 
 ## Add the route
 
