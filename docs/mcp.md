@@ -250,7 +250,7 @@ For another kind of session, implement `McpSessions`.
 
 1. **Tokens.** Implement `McpOAuthTokens`: `issue` makes a token for a grant, `verify` gives what a token stands for (like the user id), or null. You choose the table and how a token is revoked. Keep only a hash of it.
 2. **The consent page.** At `<issuer>/oauth/authorize` (or `authorizePage:`). It reads `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and `resource` from the query. The person signs in there the way your app always does.
-3. **The yes.** Your page calls your own route, with your own login. That route calls `oauth.approve(subject: ...)` and gives the page the address to send the browser to. On no, `oauth.deny(...)`. `oauth.checkClient(...)` gives the client's name for the page.
+3. **The yes.** Your page calls your own route, with your own login. That route calls `oauth.approve(subject: ...)` and gives the page the address to send the browser to. On no, `await oauth.denyClient(...)`. `await oauth.verifyClient(clientId, redirectUri)` gives the client's name for the page. Use these async methods: they know both kinds of clients (see below). The old `checkClient` and `deny` still work, but only for clients from `/oauth/register`.
 
 ```dart
 final McpOAuth oauth = McpOAuth(
@@ -274,11 +274,41 @@ Future<DoxResponse> handleMcp(DoxRequest req) async {
 }
 ```
 
+### How a client gets a `client_id`
+
+There are two ways. Both work at the same time.
+
+- **New clients: a client metadata document.** The MCP spec (`2026-07-28`) asks for this. The `client_id` is an `https` address, like `https://claude.ai/oauth/mcp-oauth-client-metadata`. A JSON file at that address holds the client's name and redirect addresses. `dox_mcp` loads the file when it sees the `client_id`. The discovery file says `client_id_metadata_document_supported: true`.
+- **Older clients: `POST /oauth/register`.** The spec now calls this old (deprecated), but many clients still use it, so it stays. Nothing is stored: the `client_id` is signed.
+
+The document must have `client_id` (the same address, letter for letter), `client_name` and `redirect_uris`. It must not have a client secret, and it must allow the auth method `none`. A broken or missing document gives `invalid_client`. The client never sees the inside error.
+
+For an `http` loopback redirect address (`localhost`, `127.0.0.1`, `[::1]`) of a document client, the port may differ (RFC 8252). Native apps like Claude Code get a random port. All other addresses must match exactly.
+
+Loading the document is safe by default:
+
+- Only `https`, with a path, and no user name, password or `#fragment` in the address.
+- The host must be a public address. Inside addresses (loopback, private, link-local, CGNAT, multicast and others) are refused. The server connects to the address it checked, so a second DNS answer can not change it.
+- No redirects. 3 seconds to connect, 5 seconds in all. At most 5 KB. The answer must be JSON.
+- Each isolate keeps a document in memory for its `Cache-Control: max-age`, at most `clientCacheMaxAge` (5 minutes). With no `max-age`, 1 minute. Failures are never kept.
+
+To accept only some clients, list their hosts. By default (`null`), any public host works:
+
+```dart
+McpOAuth(
+  issuer: 'https://my.app',
+  tokens: MyTokens(),
+  allowedClientHosts: <String>{'claude.ai'},
+);
+```
+
+On the consent page, also show the host of a document `client_id`. The client chooses its own name, so the host is the part the person can trust.
+
 | Route | What it does |
 | --- | --- |
 | `GET /.well-known/oauth-protected-resource` (also with `/mcp` after it) | Names the MCP address and the issuer (RFC 9728). |
 | `GET /.well-known/oauth-authorization-server` | The endpoints (RFC 8414). PKCE `S256` only, `authorization_code` only, no client secret. |
-| `POST /oauth/register` | Dynamic client registration (RFC 7591). Nothing is stored: the `client_id` is the name and redirect addresses, signed with `APP_KEY` (label `dox:mcp-oauth`). |
+| `POST /oauth/register` | Dynamic client registration (RFC 7591), for older clients. Nothing is stored: the `client_id` is the name and redirect addresses, signed with `APP_KEY` (label `dox:mcp-oauth`). |
 | `POST /oauth/token` | Swaps a code for a token. Form or JSON body. The code works once and for `codeTtl` (1 minute). The client, the redirect address and the PKCE verifier must match. Answers `no-store`. |
 
 Rules:
