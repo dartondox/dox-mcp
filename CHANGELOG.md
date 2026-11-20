@@ -1,5 +1,8 @@
 ## Unreleased
 
+- New: support for MCP protocol `2026-07-28`, next to the older versions on the same route. App code does not change. A `2026-07-28` request carries its version in `_meta` and needs no `initialize` and no session. The server answers `server/discover`, checks the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers against the body, and adds `resultType` and the server info to each result. Old clients that send `initialize` work the same as before.
+- New: `McpContext.clientCapabilities` and `McpContext.clientInfo`, sent by `2026-07-28` clients. Null for older clients. `McpContext.sessionId` is `''` for `2026-07-28` clients.
+- New: `McpServer.statelessProtocolVersions` and `McpServer.supportedProtocolVersions`, and the error codes `JsonRpcCode.headerMismatch` (`-32020`) and `JsonRpcCode.unsupportedProtocolVersion` (`-32022`).
 - New: `McpServer` writes a warning to stderr once when `allowedOrigins` is not set. Without it, any website can call the server from a browser (DNS rebinding). The default does not change.
 
 ## 3.2.1

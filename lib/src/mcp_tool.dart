@@ -10,16 +10,30 @@ class McpContext {
     required this.sessionId,
     required this.protocolVersion,
     this.auth,
+    this.clientCapabilities,
+    this.clientInfo,
   });
 
   /// The HTTP request of the call.
   final DoxRequest request;
 
   /// The MCP session of the call.
+  ///
+  /// Protocol 2026-07-28 has no sessions. Then it is an empty string.
   final String sessionId;
 
-  /// The protocol version the session uses, like `2025-06-18`.
+  /// The protocol version of the call, like `2025-06-18` or `2026-07-28`.
   final String protocolVersion;
+
+  /// What the client can do. Protocol 2026-07-28 sends it with every
+  /// request. Null for older versions.
+  final McpClientCapabilities? clientCapabilities;
+
+  /// The name and version of the client. Protocol 2026-07-28 sends it
+  /// with a request when the client wants to. Null for older versions,
+  /// and when the client did not send it. The client says this about
+  /// itself, so do not trust it for security.
+  final McpClientInfo? clientInfo;
 
   /// What the app passed to `McpServer.handle(auth: ...)`, like the user.
   final Object? auth;
@@ -32,6 +46,51 @@ class McpContext {
       'The MCP request has no $T (auth is ${value.runtimeType})',
     );
   }
+}
+
+/// What an MCP client can do, from
+/// `_meta["io.modelcontextprotocol/clientCapabilities"]`.
+class McpClientCapabilities {
+  const McpClientCapabilities({
+    this.roots = false,
+    this.sampling = false,
+    this.elicitation = false,
+    this.extensions = const <String>{},
+  });
+
+  /// The client can list its roots.
+  final bool roots;
+
+  /// The client can ask its model for a completion.
+  final bool sampling;
+
+  /// The client can ask the user for input.
+  final bool elicitation;
+
+  /// The ids of the MCP extensions the client supports, like
+  /// `io.modelcontextprotocol/ui`.
+  final Set<String> extensions;
+}
+
+/// The name and version of an MCP client, from
+/// `_meta["io.modelcontextprotocol/clientInfo"]`.
+class McpClientInfo {
+  const McpClientInfo({
+    required this.name,
+    required this.version,
+    this.title,
+    this.description,
+    this.websiteUrl,
+  });
+
+  final String name;
+  final String version;
+
+  /// A name for people. Optional.
+  final String? title;
+
+  final String? description;
+  final String? websiteUrl;
 }
 
 /// One item of a tool result. MCP has text, image, audio and resource

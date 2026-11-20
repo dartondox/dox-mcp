@@ -97,7 +97,33 @@ Methods: `initialize`, `ping`, `tools/list`, `tools/call`. Others get `-32601 Me
 - Bad arguments are a tool result with `isError: true` and the problems, so the model can fix them.
 - A tool that throws gives a tool result with `isError: true`. The client gets `Tool failed`, unless `APP_ENV` is `development` or `local`. A tool that wants the model to see a message must return `McpToolResult.error(...)`. `onToolError` gets the full error, for logs.
 
-Protocol versions: `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`. A client that asks for another one gets the newest.
+Protocol versions: `2026-07-28`, `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`. A client that sends `initialize` with another version gets `2025-11-25`.
+
+## Protocol 2026-07-28
+
+The same route serves old and new clients. Your app code does not change.
+
+- An old client sends `initialize` first and then uses a session, as in the table above.
+- A `2026-07-28` client never sends `initialize`. Each request carries its version and the client capabilities in `params._meta`. There is no session: the server ignores an `Mcp-Session-Id` header and never sends one. `auth` works the same.
+
+What a `2026-07-28` request gets:
+
+| Request | Answer |
+| --- | --- |
+| `server/discover` | `200` with `supportedVersions`, `capabilities`, `instructions` |
+| `tools/list`, `tools/call` | `200`, as before |
+| `_meta` without `io.modelcontextprotocol/protocolVersion` or `io.modelcontextprotocol/clientCapabilities` | `400`, `-32602` |
+| a version the server does not speak | `400`, `-32022`, `data.supported` lists the versions |
+| the `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` header is missing or does not match the body | `400`, `-32020` |
+| `ping` or another unknown method | `404`, `-32601` |
+| a batch | `400`, `-32600` |
+| a notification | `202`, no body |
+
+- Every result has `resultType: "complete"` and the server name in `_meta["io.modelcontextprotocol/serverInfo"]`.
+- `server/discover` and `tools/list` have `ttlMs: 0` and `cacheScope: "private"`, so clients do not cache them.
+- `Mcp-Name` may come as `=?base64?...?=`. The server decodes it before it compares.
+- In a tool, `context.sessionId` is `''`. `context.clientCapabilities` and `context.clientInfo` say what the client sent. They are null for old clients.
+- Not supported yet: SSE replies, `subscriptions/listen`, input requests (MRTR) and `Mcp-Param-*` headers.
 
 ## Sessions
 
