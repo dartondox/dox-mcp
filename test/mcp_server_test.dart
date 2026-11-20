@@ -28,6 +28,7 @@ class AddTool extends McpTool {
 
   @override
   McpToolResult call(Map<String, dynamic> args, McpContext context) {
+    lastContext = context;
     num sum = (args['a'] as num) + (args['b'] as num);
     return McpToolResult.text('${context.auth}: $sum');
   }
@@ -143,6 +144,9 @@ class CreateCategoryTool extends McpDtoTool<CreateCategory> {
     return McpToolResult.text('${input.name} ${input.color}');
   }
 }
+
+/// the context of the last `add` call
+McpContext? lastContext;
 
 /// what `onToolError` got
 final List<Object> toolErrors = <Object>[];
@@ -644,6 +648,344 @@ void main() {
         headers: <String, String>{'content-type': 'text/plain'},
         body: 'hi',
       )).expectStatus(415);
+    });
+  });
+
+  group('protocol 2026-07-28', () {
+    const String version = '2026-07-28';
+    Map<String, dynamic> meta = <String, dynamic>{
+      'io.modelcontextprotocol/protocolVersion': version,
+      'io.modelcontextprotocol/clientInfo': <String, dynamic>{
+        'name': 'NewClient',
+        'version': '2.0.0',
+        'title': 'New Client',
+      },
+      'io.modelcontextprotocol/clientCapabilities': <String, dynamic>{
+        'elicitation': <String, dynamic>{},
+        'extensions': <String, dynamic>{
+          'io.modelcontextprotocol/ui': <String, dynamic>{},
+        },
+      },
+    };
+    Map<String, dynamic> serverMeta = <String, dynamic>{
+      'io.modelcontextprotocol/serverInfo': <String, dynamic>{
+        'name': 'test-server',
+        'version': '1.2.3',
+        'title': 'Test',
+      },
+    };
+
+    Map<String, dynamic> modern(
+      Object id,
+      String method, [
+      Map<String, dynamic> params = const <String, dynamic>{},
+    ]) {
+      return request(1, method, <String, dynamic>{...params, '_meta': meta})
+        ..['id'] = id;
+    }
+
+    /// Sends the `MCP-*` headers from the body, unless [headers] says
+    /// otherwise. A null value in [headers] leaves that header out.
+    Future<TestResponse> send(
+      Object body, {
+      Map<String, String?> headers = const <String, String?>{},
+    }) {
+      Map<String, String?> all = <String, String?>{
+        ...json,
+        'mcp-protocol-version': version,
+        if (body is Map) 'mcp-method': body['method'] as String?,
+        if (body is Map && body['method'] == 'tools/call')
+          'mcp-name': body['params']['name'] as String?,
+        ...headers,
+      };
+      return client.post(
+        '/mcp/ann',
+        headers: <String, String>{
+          for (MapEntry<String, String?> e in all.entries)
+            if (e.value != null) e.key: e.value!,
+        },
+        body: jsonEncode(body),
+      );
+    }
+
+    void expectError(TestResponse res, int status, int code, Object? id) {
+      res.expectStatus(status);
+      expect(res.json['id'], id);
+      expect(res.json['error']['code'], code);
+      expect(res.header('mcp-session-id'), isNull);
+    }
+
+    test('server/discover gives versions, capabilities and info', () async {
+      TestResponse res = await send(modern('d1', 'server/discover'));
+      res.expectStatus(200).expectJson(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 'd1',
+        'result': <String, dynamic>{
+          'resultType': 'complete',
+          'supportedVersions': <String>[
+            '2026-07-28',
+            '2025-11-25',
+            '2025-06-18',
+            '2025-03-26',
+            '2024-11-05',
+          ],
+          'capabilities': <String, dynamic>{
+            'tools': <String, dynamic>{'listChanged': false},
+          },
+          'instructions': 'Use add.',
+          'ttlMs': 0,
+          'cacheScope': 'private',
+          '_meta': serverMeta,
+        },
+      });
+      expect(res.header('mcp-session-id'), isNull);
+    });
+
+    test('server/discover needs the _meta too', () async {
+      TestResponse res = await send(request(2, 'server/discover'));
+      expectError(res, 400, JsonRpcCode.invalidParams, 2);
+    });
+
+    test('tools/list has resultType, cache hints and server info', () async {
+      TestResponse res = await send(modern(3, 'tools/list'));
+      res.expectStatus(200);
+      Map<String, dynamic> result = res.json['result'] as Map<String, dynamic>;
+      expect(result['resultType'], 'complete');
+      expect(result['tools'], hasLength(4));
+      expect(result['ttlMs'], 0);
+      expect(result['cacheScope'], 'private');
+      expect(result['_meta'], serverMeta);
+    });
+
+    test('tools/call runs the tool with auth and no session', () async {
+      TestResponse res = await send(
+        modern(4, 'tools/call', <String, dynamic>{
+          'name': 'add',
+          'arguments': <String, dynamic>{'a': 1, 'b': 2},
+        }),
+        // a session id is ignored, and none is sent back
+        headers: <String, String?>{'mcp-session-id': 'old.session'},
+      );
+      res.expectStatus(200).expectJson(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 4,
+        'result': <String, dynamic>{
+          'resultType': 'complete',
+          'content': <dynamic>[
+            <String, dynamic>{'type': 'text', 'text': 'ann: 3'},
+          ],
+          '_meta': serverMeta,
+        },
+      });
+      expect(res.header('mcp-session-id'), isNull);
+      McpContext context = lastContext!;
+      expect(context.sessionId, '');
+      expect(context.protocolVersion, version);
+      expect(context.clientInfo!.name, 'NewClient');
+      expect(context.clientInfo!.version, '2.0.0');
+      expect(context.clientInfo!.title, 'New Client');
+      expect(context.clientCapabilities!.elicitation, isTrue);
+      expect(context.clientCapabilities!.sampling, isFalse);
+      expect(context.clientCapabilities!.roots, isFalse);
+      expect(context.clientCapabilities!.extensions, <String>{
+        'io.modelcontextprotocol/ui',
+      });
+    });
+
+    test(
+      'header names are not case sensitive; Mcp-Name can be base64',
+      () async {
+        TestResponse res = await send(
+          modern(5, 'tools/call', <String, dynamic>{
+            'name': 'add',
+            'arguments': <String, dynamic>{'a': 1, 'b': 1},
+          }),
+          headers: <String, String?>{
+            'mcp-protocol-version': null,
+            'mcp-method': null,
+            'mcp-name': null,
+            'MCP-PROTOCOL-VERSION': version,
+            'MCP-METHOD': 'tools/call',
+            'MCP-NAME': '=?base64?${base64.encode(utf8.encode('add'))}?=',
+          },
+        );
+        res.expectStatus(200);
+        expect(res.json['result']['content'][0]['text'], 'ann: 2');
+      },
+    );
+
+    test(
+      'a bad tool call is still a tool result or a JSON-RPC error',
+      () async {
+        TestResponse bad = await send(
+          modern(6, 'tools/call', <String, dynamic>{
+            'name': 'add',
+            'arguments': <String, dynamic>{'a': 'x'},
+          }),
+        );
+        bad.expectStatus(200);
+        expect(bad.json['result']['resultType'], 'complete');
+        expect(bad.json['result']['isError'], isTrue);
+        TestResponse unknown = await send(
+          modern(7, 'tools/call', <String, dynamic>{'name': 'nope'}),
+        );
+        expectError(unknown, 200, JsonRpcCode.invalidParams, 7);
+      },
+    );
+
+    test('an unsupported version lists the supported ones', () async {
+      Map<String, dynamic> body = modern(8, 'tools/list');
+      body['params']['_meta'] = <String, dynamic>{
+        ...meta,
+        'io.modelcontextprotocol/protocolVersion': '2099-01-01',
+      };
+      TestResponse res = await send(
+        body,
+        headers: <String, String?>{'mcp-protocol-version': '2099-01-01'},
+      );
+      expectError(res, 400, JsonRpcCode.unsupportedProtocolVersion, 8);
+      expect(res.json['error']['data'], <String, dynamic>{
+        'supported': McpServer.supportedProtocolVersions,
+        'requested': '2099-01-01',
+      });
+
+      // an older version needs initialize; in _meta it is unsupported
+      body['params']['_meta'] = <String, dynamic>{
+        ...meta,
+        'io.modelcontextprotocol/protocolVersion': '2025-11-25',
+      };
+      expectError(
+        await send(
+          body,
+          headers: <String, String?>{'mcp-protocol-version': '2025-11-25'},
+        ),
+        400,
+        JsonRpcCode.unsupportedProtocolVersion,
+        8,
+      );
+    });
+
+    test('a missing _meta field is invalid params', () async {
+      for (String key in <String>[
+        'io.modelcontextprotocol/protocolVersion',
+        'io.modelcontextprotocol/clientCapabilities',
+      ]) {
+        Map<String, dynamic> body = modern(9, 'tools/list');
+        body['params']['_meta'] = <String, dynamic>{...meta}..remove(key);
+        expectError(await send(body), 400, JsonRpcCode.invalidParams, 9);
+      }
+      // only the header says 2026-07-28
+      expectError(
+        await send(request(10, 'tools/list')),
+        400,
+        JsonRpcCode.invalidParams,
+        10,
+      );
+    });
+
+    test('missing or wrong MCP headers are a header mismatch', () async {
+      Map<String, dynamic> call = modern(11, 'tools/call', <String, dynamic>{
+        'name': 'add',
+        'arguments': <String, dynamic>{'a': 1, 'b': 1},
+      });
+      List<Map<String, String?>> cases = <Map<String, String?>>[
+        <String, String?>{'mcp-protocol-version': null},
+        <String, String?>{'mcp-method': null},
+        <String, String?>{'mcp-name': null},
+        <String, String?>{'mcp-method': 'tools/list'},
+        <String, String?>{'mcp-name': 'boom'},
+        <String, String?>{'mcp-name': '=?base64?Ym9vbQ==?='},
+        <String, String?>{'mcp-name': '=?base64?not base64!?='},
+      ];
+      for (Map<String, String?> headers in cases) {
+        TestResponse res = await send(call, headers: headers);
+        expectError(res, 400, JsonRpcCode.headerMismatch, 11);
+      }
+      // the protocol header must equal the _meta version, which is
+      // checked first; a supported but different header still fails
+      expectError(
+        await send(
+          modern(12, 'tools/list'),
+          headers: <String, String?>{'mcp-protocol-version': '2025-11-25'},
+        ),
+        400,
+        JsonRpcCode.headerMismatch,
+        12,
+      );
+    });
+
+    test('ping and other unknown methods are a 404', () async {
+      expectError(
+        await send(modern(13, 'ping')),
+        404,
+        JsonRpcCode.methodNotFound,
+        13,
+      );
+      expectError(
+        await send(modern(14, 'resources/list')),
+        404,
+        JsonRpcCode.methodNotFound,
+        14,
+      );
+    });
+
+    test('a batch is refused; a notification gets 202', () async {
+      TestResponse batch = await send(<Object>[
+        modern(15, 'tools/list'),
+        modern(16, 'tools/list'),
+      ]);
+      batch.expectStatus(400);
+      expect(batch.json['error']['code'], JsonRpcCode.invalidRequest);
+      TestResponse note = await send(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'method': 'notifications/x',
+      });
+      note.expectStatus(202).expectBody('');
+      expect(note.header('mcp-session-id'), isNull);
+    });
+
+    test('initialize with the new _meta still starts a session', () async {
+      TestResponse res = await post(
+        'ann',
+        request(1, 'initialize', <String, dynamic>{
+          'protocolVersion': '2025-11-25',
+          '_meta': meta,
+        }),
+      );
+      res.expectStatus(200);
+      expect(res.json['result']['protocolVersion'], '2025-11-25');
+      expect(res.json['result'].containsKey('resultType'), isFalse);
+      expect(res.header('mcp-session-id'), isNotNull);
+    });
+
+    test('an older client still works on the same endpoint', () async {
+      String session = await initialize('ann', '2025-11-25');
+      TestResponse res = await post(
+        'ann',
+        request(2, 'tools/call', <String, dynamic>{
+          'name': 'add',
+          'arguments': <String, dynamic>{'a': 2, 'b': 2},
+        }),
+        session: session,
+        protocol: '2025-11-25',
+      );
+      res.expectStatus(200).expectJson(<String, dynamic>{
+        'jsonrpc': '2.0',
+        'id': 2,
+        'result': <String, dynamic>{
+          'content': <dynamic>[
+            <String, dynamic>{'type': 'text', 'text': 'ann: 4'},
+          ],
+        },
+      });
+      expect(lastContext!.sessionId, session);
+      expect(lastContext!.clientInfo, isNull);
+      expect(lastContext!.clientCapabilities, isNull);
+      (await post(
+        'ann',
+        request(3, 'ping'),
+        session: session,
+      )).expectStatus(200);
     });
   });
 

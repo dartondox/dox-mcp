@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dox_core/dox_core.dart';
 import 'package:dox_core/http/http_response_handler.dart' show showErrors;
@@ -10,8 +11,15 @@ import 'package:dox_mcp/src/mcp_tool.dart';
 /// The header with the session id.
 const String mcpSessionHeader = 'mcp-session-id';
 
-/// The header with the protocol version, sent after `initialize`.
+/// The header with the protocol version. Older versions send it after
+/// `initialize`. Version 2026-07-28 sends it with every request.
 const String mcpProtocolHeader = 'mcp-protocol-version';
+
+/// Protocol 2026-07-28: the header with the JSON-RPC method.
+const String mcpMethodHeader = 'mcp-method';
+
+/// Protocol 2026-07-28: the header with the tool name of `tools/call`.
+const String mcpNameHeader = 'mcp-name';
 
 /// An MCP server over the Streamable HTTP transport, for Dox routes.
 ///
@@ -19,6 +27,12 @@ const String mcpProtocolHeader = 'mcp-protocol-version';
 /// `405` to `GET` (no server-to-client stream), and ends the session on
 /// `DELETE`. Sessions are signed ids (see [SignedMcpSessions]), so every
 /// isolate can serve every session.
+///
+/// One endpoint serves both kinds of clients:
+/// - Older clients (`2025-11-25` and before) send `initialize` first and
+///   then use a session.
+/// - Clients of `2026-07-28` send the protocol version in the `_meta` of
+///   every request. There is no session and no `initialize`.
 ///
 /// ```
 /// final McpServer mcp = McpServer(
@@ -49,12 +63,23 @@ class McpServer {
     if (allowedOrigins == null) warnOpenOriginOnce();
   }
 
-  /// The protocol versions this server speaks, newest first.
+  /// The protocol versions that start with `initialize` and use a
+  /// session, newest first.
   static const List<String> protocolVersions = <String>[
     '2025-11-25',
     '2025-06-18',
     '2025-03-26',
     '2024-11-05',
+  ];
+
+  /// The protocol versions with no session. Each request sends its version
+  /// in `_meta`.
+  static const List<String> statelessProtocolVersions = <String>['2026-07-28'];
+
+  /// Every protocol version this server speaks, newest first.
+  static const List<String> supportedProtocolVersions = <String>[
+    ...statelessProtocolVersions,
+    ...protocolVersions,
   ];
 
   /// `serverInfo.name`
@@ -158,6 +183,8 @@ class McpServer {
       }
     }
 
+    if (_isStateless(req, messages)) return _statelessPost(req, json, auth);
+
     bool initialize = messages.any(_isInitialize);
     String? sessionId = req.header(mcpSessionHeader);
     String protocol;
@@ -253,11 +280,7 @@ class McpServer {
       Object? result = switch (method) {
         'initialize' => _initializeResult(context.protocolVersion),
         'ping' => <String, dynamic>{},
-        'tools/list' => <String, dynamic>{
-          'tools': <Map<String, dynamic>>[
-            for (McpTool tool in _tools.values) tool.toJson(),
-          ],
-        },
+        'tools/list' => _toolsListResult(),
         'tools/call' => await _callTool(params, context),
         _ => throw McpError(
           JsonRpcCode.methodNotFound,
@@ -273,16 +296,263 @@ class McpServer {
   Map<String, dynamic> _initializeResult(String protocol) {
     return <String, dynamic>{
       'protocolVersion': protocol,
-      'capabilities': <String, dynamic>{
-        'tools': <String, dynamic>{'listChanged': false},
-      },
-      'serverInfo': <String, dynamic>{
-        'name': name,
-        'version': version,
-        'title': ?title,
-      },
+      'capabilities': _capabilities(),
+      'serverInfo': _serverInfo(),
       'instructions': ?instructions,
     };
+  }
+
+  Map<String, dynamic> _capabilities() {
+    return <String, dynamic>{
+      'tools': <String, dynamic>{'listChanged': false},
+    };
+  }
+
+  Map<String, dynamic> _serverInfo() {
+    return <String, dynamic>{'name': name, 'version': version, 'title': ?title};
+  }
+
+  Map<String, dynamic> _toolsListResult() {
+    return <String, dynamic>{
+      'tools': <Map<String, dynamic>>[
+        for (McpTool tool in _tools.values) tool.toJson(),
+      ],
+    };
+  }
+
+  /// Answer one POST of protocol 2026-07-28. Each request carries all it
+  /// needs, so there is no session: an `Mcp-Session-Id` header is ignored,
+  /// and none is sent back.
+  Future<DoxResponse> _statelessPost(
+    DoxRequest req,
+    Object? json,
+    Object? auth,
+  ) async {
+    if (json is! Map) {
+      return _rpcErrorResponse(
+        400,
+        JsonRpcCode.invalidRequest,
+        'Invalid Request: protocol 2026-07-28 does not allow batches',
+      );
+    }
+    if (JsonRpc.isNotification(json)) return response().statusCode(202);
+    Object? id = json['id'];
+    if (!JsonRpc.isRequest(json) || !JsonRpc.isValidId(id)) {
+      return _rpcErrorResponse(
+        400,
+        JsonRpcCode.invalidRequest,
+        'Invalid Request: send one request or notification',
+      );
+    }
+
+    Object? params = json['params'];
+    Object? meta = params is Map ? params['_meta'] : null;
+    Object? asked = meta is Map ? meta[_metaProtocolVersion] : null;
+    Object? capabilities = meta is Map ? meta[_metaClientCapabilities] : null;
+    if (asked is! String || capabilities is! Map) {
+      return _errorFor(
+        400,
+        id,
+        const McpError(
+          JsonRpcCode.invalidParams,
+          'Invalid params: _meta needs $_metaProtocolVersion and '
+          '$_metaClientCapabilities',
+        ),
+      );
+    }
+    if (!statelessProtocolVersions.contains(asked)) {
+      return _errorFor(
+        400,
+        id,
+        McpError(
+          JsonRpcCode.unsupportedProtocolVersion,
+          'Unsupported protocol version',
+          <String, dynamic>{
+            'supported': supportedProtocolVersions,
+            'requested': asked,
+          },
+        ),
+      );
+    }
+    String? mismatch = _headerMismatch(req, json, asked);
+    if (mismatch != null) {
+      return _errorFor(400, id, McpError(JsonRpcCode.headerMismatch, mismatch));
+    }
+
+    McpContext context = McpContext(
+      request: req,
+      sessionId: '',
+      protocolVersion: asked,
+      auth: auth,
+      clientCapabilities: _clientCapabilities(capabilities),
+      clientInfo: _clientInfo((meta as Map<dynamic, dynamic>)[_metaClientInfo]),
+    );
+
+    String method = json['method'] as String;
+    try {
+      Map<String, dynamic> result = switch (method) {
+        'server/discover' => <String, dynamic>{
+          'supportedVersions': supportedProtocolVersions,
+          'capabilities': _capabilities(),
+          'instructions': ?instructions,
+          ..._cacheHints,
+        },
+        'tools/list' => <String, dynamic>{
+          ..._toolsListResult(),
+          ..._cacheHints,
+        },
+        'tools/call' => await _callTool(params, context),
+        // `ping`, `initialize` and the rest are not methods of 2026-07-28
+        _ => throw McpError(
+          JsonRpcCode.methodNotFound,
+          'Method not found: $method',
+        ),
+      };
+      return response(
+        JsonRpc.result(id, <String, dynamic>{
+          'resultType': 'complete',
+          ...result,
+          '_meta': <String, dynamic>{_metaServerInfo: _serverInfo()},
+        }),
+      );
+    } on McpError catch (error) {
+      // an unknown method is a 404, so the client knows it is not a
+      // network problem
+      bool unknown = error.code == JsonRpcCode.methodNotFound;
+      return _errorFor(unknown ? 404 : 200, id, error);
+    }
+  }
+
+  /// The error text when the `MCP-*` headers do not match the body, or
+  /// one is missing. Null when they are fine. Header names are not case
+  /// sensitive; values are.
+  static String? _headerMismatch(
+    DoxRequest req,
+    Map<dynamic, dynamic> message,
+    String protocol,
+  ) {
+    String? sentProtocol = req.header(mcpProtocolHeader);
+    if (sentProtocol == null) {
+      return 'Header mismatch: MCP-Protocol-Version header is missing';
+    }
+    if (sentProtocol != protocol) {
+      return 'Header mismatch: MCP-Protocol-Version header does not match '
+          'the body';
+    }
+    String method = message['method'] as String;
+    String? sentMethod = req.header(mcpMethodHeader);
+    if (sentMethod == null) {
+      return 'Header mismatch: Mcp-Method header is missing';
+    }
+    if (sentMethod != method) {
+      return 'Header mismatch: Mcp-Method header does not match the body';
+    }
+    if (method == 'tools/call') {
+      String? sentName = req.header(mcpNameHeader);
+      if (sentName == null) {
+        return 'Header mismatch: Mcp-Name header is missing';
+      }
+      Object? params = message['params'];
+      Object? name = params is Map ? params['name'] : null;
+      if (_decodeHeader(sentName) != name) {
+        return 'Header mismatch: Mcp-Name header does not match the body';
+      }
+    }
+    return null;
+  }
+
+  /// A header value as the client meant it. A value that is not plain
+  /// ASCII comes as `=?base64?...?=`. Null when that base64 is broken.
+  static String? _decodeHeader(String value) {
+    const String start = '=?base64?';
+    const String end = '?=';
+    if (!value.startsWith(start) ||
+        !value.endsWith(end) ||
+        value.length < start.length + end.length) {
+      return value;
+    }
+    try {
+      return utf8.decode(
+        base64.decode(value.substring(start.length, value.length - end.length)),
+      );
+    } on FormatException {
+      return null;
+    }
+  }
+
+  static McpClientCapabilities _clientCapabilities(Map<dynamic, dynamic> json) {
+    Object? extensions = json['extensions'];
+    return McpClientCapabilities(
+      roots: json['roots'] is Map,
+      sampling: json['sampling'] is Map,
+      elicitation: json['elicitation'] is Map,
+      extensions: extensions is Map
+          ? <String>{for (Object? key in extensions.keys) '$key'}
+          : const <String>{},
+    );
+  }
+
+  /// The client info, or null when it is missing or has no name and
+  /// version. It is only for logs, so a bad one is not an error.
+  static McpClientInfo? _clientInfo(Object? json) {
+    if (json is! Map) return null;
+    Object? name = json['name'];
+    Object? version = json['version'];
+    if (name is! String || version is! String) return null;
+    Object? title = json['title'];
+    Object? description = json['description'];
+    Object? websiteUrl = json['websiteUrl'];
+    return McpClientInfo(
+      name: name,
+      version: version,
+      title: title is String ? title : null,
+      description: description is String ? description : null,
+      websiteUrl: websiteUrl is String ? websiteUrl : null,
+    );
+  }
+
+  /// A request is of protocol 2026-07-28 when its `_meta` has the version
+  /// or the client capabilities, when its `MCP-Protocol-Version` header is
+  /// such a version, or when it is `server/discover`. `initialize` always
+  /// starts the older kind with a session.
+  static bool _isStateless(DoxRequest req, List<Object?> messages) {
+    if (messages.any(_isInitialize)) return false;
+    String? header = req.header(mcpProtocolHeader);
+    if (header != null && statelessProtocolVersions.contains(header)) {
+      return true;
+    }
+    for (Object? message in messages) {
+      if (message is! Map) continue;
+      if (message['method'] == 'server/discover') return true;
+      Object? params = message['params'];
+      Object? meta = params is Map ? params['_meta'] : null;
+      if (meta is Map &&
+          (meta.containsKey(_metaProtocolVersion) ||
+              meta.containsKey(_metaClientCapabilities))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static const String _metaProtocolVersion =
+      'io.modelcontextprotocol/protocolVersion';
+  static const String _metaClientCapabilities =
+      'io.modelcontextprotocol/clientCapabilities';
+  static const String _metaClientInfo = 'io.modelcontextprotocol/clientInfo';
+  static const String _metaServerInfo = 'io.modelcontextprotocol/serverInfo';
+
+  /// The cache hints that `server/discover` and `tools/list` must have.
+  /// ponytail: always stale and private. The app may build the server per
+  /// user, so a shared cache is not safe. Add a setting when a client
+  /// needs real caching.
+  static const Map<String, dynamic> _cacheHints = <String, dynamic>{
+    'ttlMs': 0,
+    'cacheScope': 'private',
+  };
+
+  static DoxResponse _errorFor(int status, Object? id, McpError error) {
+    return response(JsonRpc.error(id, error)).statusCode(status);
   }
 
   Future<Map<String, dynamic>> _callTool(

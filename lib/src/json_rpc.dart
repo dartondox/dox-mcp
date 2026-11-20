@@ -18,6 +18,14 @@ class JsonRpcCode {
   /// A transport error that is not in JSON-RPC, like a missing session.
   /// The MCP SDKs use it for HTTP level errors.
   static const int serverError = -32000;
+
+  /// Protocol 2026-07-28: an `MCP-*` header is missing, or it does not
+  /// match the body.
+  static const int headerMismatch = -32020;
+
+  /// Protocol 2026-07-28: the server does not speak the protocol version
+  /// of the request. `data.supported` lists the ones it speaks.
+  static const int unsupportedProtocolVersion = -32022;
 }
 
 /// An error that becomes a JSON-RPC error response.

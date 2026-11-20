@@ -53,7 +53,7 @@ class AddExpense extends McpTool {
 }
 ```
 
-`McpTool` members: `name` (unique), `description`, optional `title`, `input` (default: no arguments), `call`. `McpContext` has `request`, `sessionId`, `protocolVersion`, `auth` and `authAs<T>()`.
+`McpTool` members: `name` (unique), `description`, optional `title`, `input` (default: no arguments), `call`. `McpContext` has `request`, `sessionId`, `protocolVersion`, `auth`, `authAs<T>()`, `clientCapabilities` and `clientInfo`. For a `2026-07-28` client, `sessionId` is `''`. For older clients, `clientCapabilities` and `clientInfo` are null.
 
 Results: `McpToolResult.text(String)`, `.error(String)`, `.json(Object?)` (also sets structured content for a map). A result with `isError: true` tells the model the call failed.
 
@@ -192,4 +192,5 @@ Use a store all isolates share (file or Redis, not memory). For another kind of 
 - Supported methods: `initialize`, `ping`, `tools/list`, `tools/call`. Others get `-32601`. An unknown tool is JSON-RPC error `-32602`.
 - A tool that throws becomes a tool result with `isError: true`. The client gets `Tool failed`, unless `APP_ENV` is `development` or `local`. A tool that wants the model to see a message must return `McpToolResult.error(...)`. `onToolError` gets the full error, for logs.
 - `initialize` must be sent alone, not in a batch.
-- Protocol versions: `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`.
+- Protocol versions: `2026-07-28`, `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`. One route serves all of them, and app code does not change.
+- A `2026-07-28` client sends no `initialize` and gets no session. It sends its version in `params._meta` and the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers. It can call `server/discover`. `ping` is gone for it (`404`). Bad headers give `400` with `-32020`, an unknown version `400` with `-32022`.
