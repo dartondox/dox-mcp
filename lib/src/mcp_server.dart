@@ -130,7 +130,9 @@ class McpServer {
   /// tools (`context.auth`), like the user the app found. [scope] ties
   /// sessions to it (use the user id), so a session id works only for the
   /// one it was made for. It ties the `requestState` of a tool that asks
-  /// the user to it in the same way.
+  /// the user to it in the same way. Apps with users MUST pass [scope]:
+  /// without it, one user can use the session or the question state of
+  /// another user.
   Future<DoxResponse> handle(
     DoxRequest req, {
     Object? auth,

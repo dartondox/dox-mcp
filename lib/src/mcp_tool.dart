@@ -122,7 +122,8 @@ class McpClientCapabilities {
     return modes.containsKey('form') || !modes.containsKey('url');
   }
 
-  /// The client can send the user to a URL.
+  /// The client can send the user to a URL. It reads what the client
+  /// sent, so it is false for capabilities made in code.
   bool get elicitationUrl {
     Object? modes = _json['elicitation'];
     return modes is Map && modes['url'] is Map;

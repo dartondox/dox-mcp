@@ -183,7 +183,11 @@ The kinds of input:
 - The server only asks what the client said it can answer (`elicitation`, with its `form` or `url` mode). Else the call gets `400` with `-32021` and `data.requiredCapabilities`.
 - An old client (`2025-11-25` and before) cannot answer. It gets an error result that says the client must speak `2026-07-28`.
 
-How the server keeps it safe. The server sends a `requestState` with the question, and the client sends it back with the answer. It is signed with HMAC-SHA256 (a key from `APP_KEY`, label `dox:mcp-state`). It only works for the same `scope`, the same tool, the same arguments, and for 5 minutes. A changed, old or wrong state gets `-32602`. Answers without a valid state are not read. Change the time or the key on the server:
+How the server keeps it safe. The server sends a `requestState` with the question, and the client sends it back with the answer. It is signed with HMAC-SHA256 (a key from `APP_KEY`, label `dox:mcp-state`). It only works for the same `scope`, the same tool, the same arguments, and for 5 minutes. A changed, old or wrong state gets `-32602`. Answers without a valid state are not read.
+
+Apps with users MUST pass `scope` to `handle` (like the user id). The scope ties both the sessions and the question state to that user. Without it, one user can send another user's state (same tool and arguments) until it expires.
+
+Change the time or the key on the server:
 
 ```dart
 McpServer(

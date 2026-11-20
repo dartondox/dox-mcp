@@ -992,6 +992,137 @@ void main() {
     });
   });
 
+  group('hostile input', () {
+    test('form content of a wrong type asks again', () async {
+      Map<String, dynamic> first = resultOf(
+        await call('form', args: <String, dynamic>{'id': 3}),
+      );
+      String key = keyOf(first);
+      for (Object? content in <Object?>[
+        null,
+        5,
+        <Object?>['name'],
+        'Taxi',
+        <String, dynamic>{
+          'name': <String, dynamic>{'nested': true},
+        },
+        <String, dynamic>{'name': 12},
+      ]) {
+        Map<String, dynamic> again = resultOf(
+          await call(
+            'form',
+            id: 2,
+            args: <String, dynamic>{'id': 3},
+            state: first['requestState'] as String,
+            responses: <String, dynamic>{key: accept(content)},
+          ),
+        );
+        expect(keyOf(again), key, reason: '$content');
+      }
+    });
+
+    test('an action that is not a known string asks again', () async {
+      Map<String, dynamic> first = resultOf(
+        await call('delete', args: <String, dynamic>{'id': 7}),
+      );
+      String key = keyOf(first);
+      for (Object? action in <Object?>[null, 1, true, <Object?>[], 'ACCEPT']) {
+        Map<String, dynamic> again = resultOf(
+          await call(
+            'delete',
+            id: 2,
+            args: <String, dynamic>{'id': 7},
+            state: first['requestState'] as String,
+            responses: <String, dynamic>{
+              key: <String, dynamic>{
+                'action': action,
+                'content': <String, dynamic>{'value': true},
+              },
+            },
+          ),
+        );
+        expect(keyOf(again), key, reason: '$action');
+      }
+    });
+
+    test('inputResponses that are not a map are ignored', () async {
+      Map<String, dynamic> first = resultOf(
+        await call('delete', args: <String, dynamic>{'id': 7}),
+      );
+      String key = keyOf(first);
+      for (Object? responses in <Object?>[
+        <Object?>[
+          accept(<String, dynamic>{'value': true}),
+        ],
+        'yes',
+        42,
+        <String, dynamic>{
+          key: <Object?>['accept'],
+        },
+        <String, dynamic>{key: null},
+      ]) {
+        TestResponse res = await client.post(
+          '/mrtr/ann',
+          headers: <String, String>{
+            'content-type': 'application/json',
+            'mcp-protocol-version': version,
+            'mcp-method': 'tools/call',
+            'mcp-name': 'delete',
+          },
+          body: jsonEncode(<String, dynamic>{
+            'jsonrpc': '2.0',
+            'id': 2,
+            'method': 'tools/call',
+            'params': <String, dynamic>{
+              'name': 'delete',
+              'arguments': <String, dynamic>{'id': 7},
+              'requestState': first['requestState'],
+              'inputResponses': responses,
+              '_meta': <String, dynamic>{
+                'io.modelcontextprotocol/protocolVersion': version,
+                'io.modelcontextprotocol/clientCapabilities': formOnly,
+              },
+            },
+          }),
+        );
+        expect(keyOf(resultOf(res)), key, reason: '$responses');
+      }
+    });
+
+    test('an answer for a key that was not asked is ignored', () async {
+      // the state of `delete` asks only confirmDelete. An answer for the
+      // key of another tool's input must not be read.
+      Map<String, dynamic> pick = resultOf(await call('pick'));
+      String otherKey =
+          (pick['inputRequests'] as Map<String, dynamic>).keys.first;
+      Map<String, dynamic> first = resultOf(
+        await call('delete', args: <String, dynamic>{'id': 7}),
+      );
+      Map<String, dynamic> again = resultOf(
+        await call(
+          'delete',
+          id: 2,
+          args: <String, dynamic>{'id': 7},
+          state: first['requestState'] as String,
+          responses: <String, dynamic>{
+            otherKey: accept(<String, dynamic>{'value': true}),
+          },
+        ),
+      );
+      expect(keyOf(again), keyOf(first));
+    });
+
+    test('a very large requestState is refused', () async {
+      String big = '${'A' * (3 * 1024 * 1024)}.x';
+      TestResponse res = await call(
+        'delete',
+        args: <String, dynamic>{'id': 7},
+        state: big,
+      );
+      expectError(res, 200, JsonRpcCode.invalidParams);
+    });
+  });
+
   group('inputRequired', () {
     test('needs at least one input', () {
       expect(

@@ -218,5 +218,6 @@ Inputs: `McpInput.confirm` (`bool`), `.text` (`String`), `.number` (`num`), `.ch
 - Protocol versions: `2026-07-28`, `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`. One route serves all of them, and app code does not change.
 - A `2026-07-28` client sends no `initialize` and gets no session. It sends its version in `params._meta` and the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers. It can call `server/discover`. `ping` is gone for it (`404`). Bad headers give `400` with `-32020`, an unknown version `400` with `-32022`.
 - `McpToolResult.inputRequired` only works for `2026-07-28` clients. An old client gets an error result. A client without the needed capability (`elicitation` form or url mode, or the custom `capability`) gets `400` with `-32021`.
+- Apps with users MUST pass `scope` to `handle` (like the user id). It ties both the sessions and the `requestState` to that user. Without it, one user can reuse another user's state until it expires.
 - The `requestState` is signed (`APP_KEY`, label `dox:mcp-state`) and bound to `scope`, tool, arguments and 5 minutes (`requestStateTtl`). A bad one gets `-32602`. It can be sent again until it expires, so a tool that must run once checks that itself.
 - Never ask for a password or a key with a form. Use `McpInput.url`.
