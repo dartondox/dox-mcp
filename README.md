@@ -341,7 +341,9 @@ Loading the document is safe by default:
 - The host must be a public address. Inside addresses (loopback, private, link-local, CGNAT, multicast and others) are refused. The server connects to the address it checked, so a second DNS answer can not change it.
 - No redirects. 3 seconds to connect, 5 seconds in all. At most 5 KB. The answer must be JSON.
 - Each isolate keeps a document in memory for its `Cache-Control: max-age`, at most `clientCacheMaxAge` (5 minutes). With no `max-age`, 1 minute. With `no-store`, it is not kept.
-- When a new load fails, the old document stays in use for 1 more hour (`McpOAuth.clientStaleAge`).
+- When the host gives no answer to a new load (a timeout, no connection, or a `5xx` status), the old document stays in use for 1 more hour (`McpOAuth.clientStaleAge`). A real answer (like `404`, or a changed document) replaces the old document at once.
+- When all slots are busy, the old document stays in use for 5 more minutes (`McpOAuth.clientBusyStaleAge`).
+- A document with `no-store`, `no-cache` or `max-age=0` is kept for 1 minute only for `checkClient` and `deny` (`McpOAuth.clientHandOffAge`), so a consent page that uses them works.
 - A failure is kept for 1 minute (`McpOAuth.clientFailureAge`). In that time, the server does not load the address again. If the host itself fails (not found, no connection, no answer in time), the server does not load any address on that host and port for 1 minute.
 
 To accept only some clients, list their hosts. By default (`null`), any public host works:
@@ -359,6 +361,7 @@ Three options stop abuse of the document loads:
 - `allowedClientHosts`: load documents only from these hosts.
 - `maxClientFetches` (default 8): how many documents each isolate loads at the same time. When all are busy, a new address gets `invalid_client` at once. It does not wait. A known client gets its old document.
 - `maxClientFetchesPerHost` (default 2): how many of these loads can go to one host and port. One slow host can not use all the slots.
+- `McpOAuthHttpFetcher(maxFetchesPerAddress:)` (default 2): how many loads can go to one IP address. Many host names on one slow server can not use all the slots.
 
 On the consent page, also show `client.host` next to the name. It is the host of a document `client_id`, like `claude.ai`, and null for a signed client. The client chooses its own name, so the host is the part the person can trust.
 

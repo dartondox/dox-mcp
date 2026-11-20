@@ -111,6 +111,23 @@ class BlockingFetcher extends McpOAuthClientFetcher {
 
 final BlockingFetcher blocking = BlockingFetcher();
 
+/// Says busy until [busy] is false.
+class BusyFetcher extends McpOAuthClientFetcher {
+  final List<String> calls = <String>[];
+  bool busy = true;
+
+  @override
+  Future<McpOAuthFetchedDocument> fetch(Uri url) async {
+    calls.add('$url');
+    if (busy) throw const McpOAuthFetchBusyException('busy');
+    return McpOAuthFetchedDocument(
+      statusCode: 200,
+      body: jsonEncode(goodDoc('$url')),
+      contentType: 'application/json',
+    );
+  }
+}
+
 /// Every host is down.
 class HostDownFetcher extends McpOAuthClientFetcher {
   final List<String> calls = <String>[];
@@ -676,11 +693,11 @@ void main() {
       expect(down.calls, hasLength(3));
     });
 
-    test('an old document is used when a new load fails', () async {
+    test('an old document is used when the host gives no answer', () async {
       fetcher.serve(clientUrl, goodDoc(), cacheControl: 'max-age=60');
       await oauth.findClient(clientUrl);
       fakeNow = fakeNow.add(const Duration(seconds: 61));
-      fetcher.docs.clear();
+      fetcher.serve(clientUrl, <String, dynamic>{}, status: 503);
       expect((await oauth.findClient(clientUrl)).id, clientUrl);
       expect(fetcher.calls, hasLength(2));
       // the failure is kept: no new load, the old document again
@@ -739,6 +756,55 @@ void main() {
     });
   });
 
+  group('a real answer replaces the old document', () {
+    Future<void> loadThenExpire() async {
+      fetcher.serve(clientUrl, goodDoc(), cacheControl: 'max-age=60');
+      await oauth.verifyClient(clientUrl, redirect);
+      fakeNow = fakeNow.add(const Duration(seconds: 61));
+    }
+
+    test('a 404 drops it', () async {
+      await loadThenExpire();
+      fetcher.serve(clientUrl, goodDoc(), status: 404);
+      await expectLater(
+        oauth.verifyClient(clientUrl, redirect),
+        oauthError('invalid_client'),
+      );
+      expect(
+        () => oauth.checkClient(clientUrl, redirect),
+        throwsA(isA<McpOAuthException>()),
+      );
+    });
+
+    test('a removed redirect address is refused at once', () async {
+      await loadThenExpire();
+      fetcher.serve(clientUrl, <String, dynamic>{
+        ...goodDoc(),
+        'redirect_uris': <String>['https://client.example/new'],
+      }, cacheControl: 'max-age=60');
+      await expectLater(
+        oauth.verifyClient(clientUrl, redirect),
+        oauthError('invalid_request'),
+      );
+      expect(
+        () => oauth.checkClient(clientUrl, redirect),
+        throwsA(isA<McpOAuthException>()),
+      );
+    });
+
+    test('a broken document drops it', () async {
+      await loadThenExpire();
+      fetcher.serve(
+        clientUrl,
+        <String, dynamic>{...goodDoc()}..remove('client_name'),
+      );
+      await expectLater(
+        oauth.verifyClient(clientUrl, redirect),
+        oauthError('invalid_client'),
+      );
+    });
+  });
+
   group('per host and full slots', () {
     test('9 slow loads of one host do not block another host', () async {
       BlockingFetcher slow = BlockingFetcher();
@@ -786,8 +852,42 @@ void main() {
       Future<McpOAuthClient> busy = o.findClient('https://b.example/c');
       expect((await o.findClient(clientUrl)).id, clientUrl);
       expect(slow.calls, <String>[clientUrl, 'https://b.example/c']);
+      // only for clientBusyStaleAge
+      fakeNow = fakeNow.add(McpOAuth.clientBusyStaleAge);
+      await expectLater(o.findClient(clientUrl), oauthError('invalid_client'));
       slow.release();
       await busy;
+    });
+
+    test('a busy fetcher is not kept as a failure', () async {
+      BusyFetcher busy = BusyFetcher();
+      McpOAuth o = McpOAuth(
+        issuer: 'https://app.test',
+        tokens: tokens,
+        key: utf8.encode('o' * 32),
+        clientFetcher: busy,
+        now: readFakeNow,
+      );
+      await expectLater(o.findClient(clientUrl), oauthError('invalid_client'));
+      busy.busy = false;
+      expect((await o.findClient(clientUrl)).id, clientUrl);
+      expect(busy.calls, hasLength(2));
+    });
+
+    test('address slots: at most the cap per address', () {
+      McpOAuthAddressSlots slots = McpOAuthAddressSlots();
+      // 4 host names on one address
+      expect(slots.take('9.9.9.9', 2), isTrue);
+      expect(slots.take('9.9.9.9', 2), isTrue);
+      expect(slots.take('9.9.9.9', 2), isFalse);
+      expect(slots.take('9.9.9.9', 2), isFalse);
+      expect(slots.take('1.1.1.1', 2), isTrue);
+      slots.release('9.9.9.9');
+      expect(slots.loads('9.9.9.9'), 1);
+      expect(slots.take('9.9.9.9', 2), isTrue);
+      slots.release('9.9.9.9');
+      slots.release('9.9.9.9');
+      expect(slots.loads('9.9.9.9'), 0);
     });
   });
 
@@ -838,6 +938,29 @@ void main() {
       fakeNow = fakeNow.add(const Duration(seconds: 61));
       expect(oauth.checkClient(clientUrl, redirect).id, clientUrl);
       expect(fetcher.calls, hasLength(2));
+    });
+
+    test('a no-store document works for the whole flow', () async {
+      fetcher.serve(clientUrl, goodDoc(), cacheControl: 'no-store');
+      expect(
+        () => oauth.checkClient(clientUrl, redirect),
+        throwsA(isA<McpOAuthException>()),
+      );
+      await pumpEventQueue();
+      expect(oauth.checkClient(clientUrl, redirect).id, clientUrl);
+      await pumpEventQueue();
+      Uri denied = Uri.parse(
+        oauth.deny(clientId: clientUrl, redirectUri: redirect),
+      );
+      expect(denied.queryParameters['error'], 'access_denied');
+      TestResponse res = await swap(clientUrl, await codeFor(clientUrl));
+      res.expectStatus(200);
+      // the hand-off is short
+      fakeNow = fakeNow.add(McpOAuth.clientHandOffAge);
+      expect(
+        () => oauth.checkClient(clientUrl, redirect),
+        throwsA(isA<McpOAuthException>()),
+      );
     });
 
     test('a bad address is refused with no load', () {
