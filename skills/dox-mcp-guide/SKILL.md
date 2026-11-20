@@ -53,7 +53,7 @@ class AddExpense extends McpTool {
 }
 ```
 
-`McpTool` members: `name` (unique), `description`, optional `title`, `input` (default: no arguments), `call`. `McpContext` has `request`, `sessionId`, `protocolVersion`, `auth`, `authAs<T>()`, `clientCapabilities` and `clientInfo`. For a `2026-07-28` client, `sessionId` is `''`. For older clients, `clientCapabilities` and `clientInfo` are null.
+`McpTool` members: `name` (unique), `description`, optional `title`, `input` (default: no arguments), `call`. `McpContext` has `request`, `sessionId`, `protocolVersion`, `auth`, `authAs<T>()`, `clientCapabilities`, `clientInfo` and `answer(input)` (see recipe 7). For a `2026-07-28` client, `sessionId` is `''`. For older clients, `clientCapabilities` and `clientInfo` are null.
 
 Results: `McpToolResult.text(String)`, `.error(String)`, `.json(Object?)` (also sets structured content for a map). A result with `isError: true` tells the model the call failed.
 
@@ -177,6 +177,29 @@ McpServer(
 
 Use a store all isolates share (file or Redis, not memory). For another kind of session, implement `McpSessions`.
 
+### 7. Ask the user during a tool
+
+A `2026-07-28` client can show a question and call the tool again with the answer. The same `static final` input asks and reads. Works in `McpTool.call` and `McpDtoTool.handle`.
+
+```dart
+static final McpInput<bool> confirmDelete = McpInput.confirm('Delete this expense?');
+
+McpAnswer<bool>? answer = context.answer(confirmDelete);
+if (answer == null) {
+  return McpToolResult.inputRequired(<McpInput<Object?>>[confirmDelete]);
+}
+return switch (answer) {
+  McpAccepted<bool>(value: true) => _delete(args),
+  McpAccepted<bool>() ||
+  McpDeclined<bool>() ||
+  McpCancelled<bool>() => McpToolResult.text('Cancelled'),
+};
+```
+
+Inputs: `McpInput.confirm` (`bool`), `.text` (`String`), `.number` (`num`), `.choice(message, Color.values)` (the enum), `.form(message, NewExpense.schema)` (the DTO, flat fields only, no async rules), `.url(message, url)` (`void`, accept only means the user agreed to open it). For anything else, extend `McpCustomInput<T>` (`method`, `capability` path, `toJson()`, `parse(result)`), the one place with a raw map.
+
+`context.answer` is null when there is no answer yet, or when it is bad. Then ask again.
+
 ## Gotchas
 
 - The MCP route has no auth of its own. Check who calls before `handle`, and pass `auth` and `scope`.
@@ -194,3 +217,6 @@ Use a store all isolates share (file or Redis, not memory). For another kind of 
 - `initialize` must be sent alone, not in a batch.
 - Protocol versions: `2026-07-28`, `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`. One route serves all of them, and app code does not change.
 - A `2026-07-28` client sends no `initialize` and gets no session. It sends its version in `params._meta` and the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers. It can call `server/discover`. `ping` is gone for it (`404`). Bad headers give `400` with `-32020`, an unknown version `400` with `-32022`.
+- `McpToolResult.inputRequired` only works for `2026-07-28` clients. An old client gets an error result. A client without the needed capability (`elicitation` form or url mode, or the custom `capability`) gets `400` with `-32021`.
+- The `requestState` is signed (`APP_KEY`, label `dox:mcp-state`) and bound to `scope`, tool, arguments and 5 minutes (`requestStateTtl`). A bad one gets `-32602`. It can be sent again until it expires, so a tool that must run once checks that itself.
+- Never ask for a password or a key with a form. Use `McpInput.url`.

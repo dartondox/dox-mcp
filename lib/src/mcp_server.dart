@@ -7,6 +7,7 @@ import 'package:dox_core/dox_core.dart';
 // ignore: unnecessary_import
 import 'package:dox_core/http/http_response_handler.dart' show showErrors;
 import 'package:dox_mcp/src/json_rpc.dart';
+import 'package:dox_mcp/src/mcp_request_state.dart';
 import 'package:dox_mcp/src/mcp_sessions.dart';
 import 'package:dox_mcp/src/origin_check.dart';
 import 'package:dox_mcp/src/mcp_tool.dart';
@@ -58,7 +59,10 @@ class McpServer {
     McpSessions? sessions,
     this.allowedOrigins,
     this.onToolError,
+    Duration requestStateTtl = const Duration(minutes: 5),
+    List<int>? requestStateKey,
   }) : sessions = sessions ?? SignedMcpSessions(),
+       _states = McpRequestState(key: requestStateKey, ttl: requestStateTtl),
        _tools = <String, McpTool>{for (McpTool tool in tools) tool.name: tool} {
     if (_tools.length != tools.length) {
       throw ArgumentError('Two MCP tools have the same name');
@@ -113,13 +117,20 @@ class McpServer {
 
   final Map<String, McpTool> _tools;
 
+  /// Signs the `requestState` of a tool that asks the user (protocol
+  /// 2026-07-28). The key comes from `APP_KEY` (label `dox:mcp-state`),
+  /// unless `requestStateKey` is given. A state works for
+  /// `requestStateTtl` (default 5 minutes).
+  final McpRequestState _states;
+
   /// The tools, in the order they were given.
   List<McpTool> get tools => _tools.values.toList();
 
   /// Answer one HTTP request of the transport. [auth] is handed to the
   /// tools (`context.auth`), like the user the app found. [scope] ties
   /// sessions to it (use the user id), so a session id works only for the
-  /// one it was made for.
+  /// one it was made for. It ties the `requestState` of a tool that asks
+  /// the user to it in the same way.
   Future<DoxResponse> handle(
     DoxRequest req, {
     Object? auth,
@@ -186,7 +197,9 @@ class McpServer {
       }
     }
 
-    if (_isStateless(req, messages)) return _statelessPost(req, json, auth);
+    if (_isStateless(req, messages)) {
+      return _statelessPost(req, json, auth, scope);
+    }
 
     bool initialize = messages.any(_isInitialize);
     String? sessionId = req.header(mcpSessionHeader);
@@ -284,7 +297,7 @@ class McpServer {
         'initialize' => _initializeResult(context.protocolVersion),
         'ping' => <String, dynamic>{},
         'tools/list' => _toolsListResult(),
-        'tools/call' => await _callTool(params, context),
+        'tools/call' => await _callTool(params, context, scope: ''),
         _ => throw McpError(
           JsonRpcCode.methodNotFound,
           'Method not found: $method',
@@ -330,6 +343,7 @@ class McpServer {
     DoxRequest req,
     Object? json,
     Object? auth,
+    String scope,
   ) async {
     if (json is! Map) {
       return _rpcErrorResponse(
@@ -387,7 +401,7 @@ class McpServer {
       sessionId: '',
       protocolVersion: asked,
       auth: auth,
-      clientCapabilities: _clientCapabilities(capabilities),
+      clientCapabilities: McpInputs.capabilitiesOf(capabilities),
       clientInfo: _clientInfo((meta as Map<dynamic, dynamic>)[_metaClientInfo]),
     );
 
@@ -404,7 +418,7 @@ class McpServer {
           ..._toolsListResult(),
           ..._cacheHints,
         },
-        'tools/call' => await _callTool(params, context),
+        'tools/call' => await _callTool(params, context, scope: scope),
         // `ping`, `initialize` and the rest are not methods of 2026-07-28
         _ => throw McpError(
           JsonRpcCode.methodNotFound,
@@ -420,9 +434,13 @@ class McpServer {
       );
     } on McpError catch (error) {
       // an unknown method is a 404, so the client knows it is not a
-      // network problem
-      bool unknown = error.code == JsonRpcCode.methodNotFound;
-      return _errorFor(unknown ? 404 : 200, id, error);
+      // network problem. A missing client capability must be a 400.
+      int status = switch (error.code) {
+        JsonRpcCode.methodNotFound => 404,
+        JsonRpcCode.missingRequiredClientCapability => 400,
+        _ => 200,
+      };
+      return _errorFor(status, id, error);
     }
   }
 
@@ -481,18 +499,6 @@ class McpServer {
     } on FormatException {
       return null;
     }
-  }
-
-  static McpClientCapabilities _clientCapabilities(Map<dynamic, dynamic> json) {
-    Object? extensions = json['extensions'];
-    return McpClientCapabilities(
-      roots: json['roots'] is Map,
-      sampling: json['sampling'] is Map,
-      elicitation: json['elicitation'] is Map,
-      extensions: extensions is Map
-          ? <String>{for (Object? key in extensions.keys) '$key'}
-          : const <String>{},
-    );
   }
 
   /// The client info, or null when it is missing or has no name and
@@ -560,8 +566,9 @@ class McpServer {
 
   Future<Map<String, dynamic>> _callTool(
     Object? params,
-    McpContext context,
-  ) async {
+    McpContext context, {
+    required String scope,
+  }) async {
     if (params is! Map || params['name'] is! String) {
       throw const McpError(
         JsonRpcCode.invalidParams,
@@ -580,9 +587,19 @@ class McpServer {
       return McpToolResult.invalidArguments(toolName, parsed.issues).toJson();
     }
 
+    // Only protocol 2026-07-28 has client capabilities, and only it can
+    // answer questions (multi round-trip requests).
+    McpClientCapabilities? capabilities = context.clientCapabilities;
+    Map<String, Map<String, Object?>> answers =
+        <String, Map<String, Object?>>{};
+    if (capabilities != null) {
+      answers = _answersOf(params, toolName, args, scope);
+      context = McpInputs.withAnswers(context, answers);
+    }
+
+    McpToolResult result;
     try {
-      McpToolResult result = await tool.call(parsed.value!, context);
-      return result.toJson();
+      result = await tool.call(parsed.value!, context);
     } catch (error, stack) {
       onToolError?.call(toolName, error, stack);
       // The error text can hold hosts, SQL or passwords. Like the web
@@ -590,6 +607,97 @@ class McpServer {
       return McpToolResult.error(showErrors() ? '$error' : 'Tool failed')
           .toJson();
     }
+    // An older client gets the error text of the result.
+    if (result.inputs.isEmpty || capabilities == null) return result.toJson();
+    return _inputRequired(
+      result.inputs,
+      capabilities,
+      answers,
+      scope: scope,
+      tool: toolName,
+      args: args,
+    );
+  }
+
+  /// The answers of a retried call: the ones the client sends in
+  /// `inputResponses`, and the ones of earlier rounds from the
+  /// `requestState`. Answers come only with a valid state, so a client
+  /// cannot answer a question the server did not ask. A bad state throws.
+  Map<String, Map<String, Object?>> _answersOf(
+    Map<dynamic, dynamic> params,
+    String tool,
+    Object? args,
+    String scope,
+  ) {
+    Object? state = params['requestState'];
+    if (state == null) return <String, Map<String, Object?>>{};
+    if (state is! String) {
+      throw const McpError(
+        JsonRpcCode.invalidParams,
+        'Invalid params: requestState must be a string',
+      );
+    }
+    McpStateContent content = _states.verify(
+      state,
+      scope: scope,
+      tool: tool,
+      args: args,
+    );
+    Map<String, Map<String, Object?>> answers = <String, Map<String, Object?>>{
+      ...content.answers,
+    };
+    Object? responses = params['inputResponses'];
+    if (responses is Map) {
+      for (String key in content.asked) {
+        Object? response = responses[key];
+        if (response is Map) answers[key] = response.cast<String, Object?>();
+      }
+    }
+    return answers;
+  }
+
+  /// The `input_required` result. Throws when the client cannot answer
+  /// one of [inputs].
+  Map<String, dynamic> _inputRequired(
+    List<McpInput<Object?>> inputs,
+    McpClientCapabilities capabilities,
+    Map<String, Map<String, Object?>> answers, {
+    required String scope,
+    required String tool,
+    required Object? args,
+  }) {
+    for (McpInput<Object?> input in inputs) {
+      if (!McpInputs.supports(capabilities, input)) {
+        Map<String, Object?> required = McpInputs.requiredCapabilitiesOf(input);
+        throw McpError(
+          JsonRpcCode.missingRequiredClientCapability,
+          'The tool needs the client capability ${required.keys.first}',
+          <String, dynamic>{'requiredCapabilities': required},
+        );
+      }
+    }
+    List<String> asked = <String>[
+      for (McpInput<Object?> input in inputs) McpInputs.keyOf(input),
+    ];
+    // keep the answers of earlier rounds, but not the ones asked again
+    Map<String, Map<String, Object?>> kept = <String, Map<String, Object?>>{
+      for (MapEntry<String, Map<String, Object?>> entry in answers.entries)
+        if (!asked.contains(entry.key)) entry.key: entry.value,
+    };
+    return <String, dynamic>{
+      'resultType': 'input_required',
+      'inputRequests': <String, dynamic>{
+        for (McpInput<Object?> input in inputs)
+          McpInputs.keyOf(input): McpInputs.requestOf(input),
+      },
+      'requestState': _states.sign(
+        scope: scope,
+        tool: tool,
+        args: args,
+        asked: asked,
+        answers: kept,
+      ),
+    };
   }
 
   /// The version the client asked for, when this server speaks it. Else

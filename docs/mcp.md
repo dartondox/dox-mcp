@@ -123,7 +123,110 @@ What a `2026-07-28` request gets:
 - `server/discover` and `tools/list` have `ttlMs: 0` and `cacheScope: "private"`, so clients do not cache them.
 - `Mcp-Name` may come as `=?base64?...?=`. The server decodes it before it compares.
 - In a tool, `context.sessionId` is `''`. `context.clientCapabilities` and `context.clientInfo` say what the client sent. They are null for old clients.
-- Not supported yet: SSE replies, `subscriptions/listen`, input requests (MRTR) and `Mcp-Param-*` headers.
+- Not supported yet: SSE replies, `subscriptions/listen` and `Mcp-Param-*` headers. Input requests (MRTR) work for `tools/call`, see [Ask the user during a tool](#ask-the-user-during-a-tool).
+
+## Ask the user during a tool
+
+A tool can stop and ask the user a question, like "Delete this expense?". The client shows the question, then calls the tool again with the answer. This needs a `2026-07-28` client. The server keeps nothing between the two calls.
+
+Make the question once, in a `static final` field. The same object asks and reads the answer:
+
+```dart
+class DeleteExpense extends McpTool {
+  static final McpInput<bool> confirmDelete = McpInput.confirm(
+    'Delete this expense?',
+  );
+
+  // name, description, input ...
+
+  @override
+  Future<McpToolResult> call(
+    Map<String, dynamic> args,
+    McpContext context,
+  ) async {
+    McpAnswer<bool>? answer = context.answer(confirmDelete);
+    if (answer == null) {
+      return McpToolResult.inputRequired(<McpInput<Object?>>[confirmDelete]);
+    }
+    return switch (answer) {
+      McpAccepted<bool>(value: true) => _delete(args),
+      McpAccepted<bool>() ||
+      McpDeclined<bool>() ||
+      McpCancelled<bool>() => McpToolResult.text('Cancelled'),
+    };
+  }
+}
+```
+
+`context.answer` gives null when there is no answer yet. It also gives null when the answer is bad (a wrong type, or a form that fails the DTO rules). Then the tool asks again. It works the same in `McpDtoTool.handle`.
+
+The answer is one of:
+
+- `McpAccepted<T>(value)`: the user answered.
+- `McpDeclined`: the user said no.
+- `McpCancelled`: the user closed the question.
+
+The kinds of input:
+
+| Input | Answer |
+| --- | --- |
+| `McpInput.confirm(message)` | `bool` |
+| `McpInput.text(message)` | `String` |
+| `McpInput.number(message)` | `num` |
+| `McpInput.choice(message, Color.values)` | the enum value |
+| `McpInput.form(message, NewExpense.schema)` | the `@Dto` object, checked by its rules |
+| `McpInput.url(message, url)` | nothing. `McpAccepted` only means the user agreed to open the page |
+
+- An MCP form only has flat fields: text, numbers, booleans, enums and lists of enum values. `McpInput.form` throws an `ArgumentError` for a DTO with a nested object or list. It also throws for a DTO with async rules like `@Unique`, because the answer is read without `await`. Check those in the tool.
+- Never ask for a password or a key in a form. Use `McpInput.url` and a page of your app for that. Never put a secret or a signed-in link in the URL.
+- Ask for many things at once with a longer list. Two inputs that ask the same thing throw an `ArgumentError`. Answers of earlier rounds are kept, so a tool can also ask one question per round.
+- The server only asks what the client said it can answer (`elicitation`, with its `form` or `url` mode). Else the call gets `400` with `-32021` and `data.requiredCapabilities`.
+- An old client (`2025-11-25` and before) cannot answer. It gets an error result that says the client must speak `2026-07-28`.
+
+How the server keeps it safe. The server sends a `requestState` with the question, and the client sends it back with the answer. It is signed with HMAC-SHA256 (a key from `APP_KEY`, label `dox:mcp-state`). It only works for the same `scope`, the same tool, the same arguments, and for 5 minutes. A changed, old or wrong state gets `-32602`. Answers without a valid state are not read. Change the time or the key on the server:
+
+```dart
+McpServer(
+  name: 'my-app',
+  version: '1.0.0',
+  tools: tools,
+  requestStateTtl: const Duration(minutes: 10),
+  requestStateKey: myKey, // default: from APP_KEY
+);
+```
+
+A state can be sent again until it expires. A tool that must run only once (like a payment) must check that itself, for example with a row in the database.
+
+For an input kind this package does not have yet, extend `McpCustomInput<T>`. Give the `method`, the `capability` path it needs (like `<String>['sampling']`), `toJson()` (the `params`) and `parse(result)`. This is the only place with a raw map. When `parse` throws, the tool asks again.
+
+```dart
+class AskModel extends McpCustomInput<String> {
+  @override
+  String get method => 'sampling/createMessage';
+
+  @override
+  List<String> get capability => <String>['sampling'];
+
+  @override
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'messages': <Object?>[
+        <String, Object?>{
+          'role': 'user',
+          'content': <String, Object?>{'type': 'text', 'text': 'Hi?'},
+        },
+      ],
+      'maxTokens': 100,
+    };
+  }
+
+  @override
+  String parse(Map<String, Object?> result) {
+    Map<String, Object?> content = result['content']! as Map<String, Object?>;
+    return content['text']! as String;
+  }
+}
+```
 
 ## Sessions
 

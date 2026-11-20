@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dox_core/dox_core.dart';
+import 'package:dox_mcp/src/mcp_request_state.dart';
+
+part 'mcp_input.dart';
 
 /// What a tool call knows about its request.
 class McpContext {
@@ -12,7 +15,15 @@ class McpContext {
     this.auth,
     this.clientCapabilities,
     this.clientInfo,
-  });
+  }) : _answers = const <String, Map<String, Object?>>{};
+
+  McpContext._withAnswers(McpContext other, this._answers)
+    : request = other.request,
+      sessionId = other.sessionId,
+      protocolVersion = other.protocolVersion,
+      auth = other.auth,
+      clientCapabilities = other.clientCapabilities,
+      clientInfo = other.clientInfo;
 
   /// The HTTP request of the call.
   final DoxRequest request;
@@ -38,6 +49,22 @@ class McpContext {
   /// What the app passed to `McpServer.handle(auth: ...)`, like the user.
   final Object? auth;
 
+  /// The client answers of a retried call, by input key.
+  final Map<String, Map<String, Object?>> _answers;
+
+  /// The user's answer to [input], or null when there is none yet. Then
+  /// return `McpToolResult.inputRequired(<McpInput>[input])` to ask.
+  ///
+  /// It is also null when the answer cannot be read, like a wrong type
+  /// or a form that fails the DTO rules. Then the tool asks again.
+  ///
+  /// Only protocol 2026-07-28 has answers. Older clients always get null.
+  McpAnswer<T>? answer<T>(McpInput<T> input) {
+    Map<String, Object?>? result = _answers[input._key];
+    if (result == null) return null;
+    return input._answer(result);
+  }
+
   /// [auth] as a [T]. Throws a [StateError] when it is not one.
   T authAs<T>() {
     Object? value = auth;
@@ -56,7 +83,22 @@ class McpClientCapabilities {
     this.sampling = false,
     this.elicitation = false,
     this.extensions = const <String>{},
-  });
+  }) : _json = const <String, Object?>{};
+
+  McpClientCapabilities._fromJson(this._json)
+    : roots = _json['roots'] is Map,
+      sampling = _json['sampling'] is Map,
+      elicitation = _json['elicitation'] is Map,
+      extensions = _json['extensions'] is Map
+          ? <String>{
+              for (Object? key
+                  in (_json['extensions'] as Map<dynamic, dynamic>).keys)
+                '$key',
+            }
+          : const <String>{};
+
+  /// The capabilities as the client sent them.
+  final Map<dynamic, dynamic> _json;
 
   /// The client can list its roots.
   final bool roots;
@@ -70,6 +112,33 @@ class McpClientCapabilities {
   /// The ids of the MCP extensions the client supports, like
   /// `io.modelcontextprotocol/ui`.
   final Set<String> extensions;
+
+  /// The client can show a form. An empty `elicitation` object means
+  /// form mode too.
+  bool get elicitationForm {
+    if (!elicitation) return false;
+    Object? modes = _json['elicitation'];
+    if (modes is! Map) return true;
+    return modes.containsKey('form') || !modes.containsKey('url');
+  }
+
+  /// The client can send the user to a URL.
+  bool get elicitationUrl {
+    Object? modes = _json['elicitation'];
+    return modes is Map && modes['url'] is Map;
+  }
+
+  /// True when the client sent an object at [path], like
+  /// `<String>['sampling', 'tools']`. It reads what the client sent, so
+  /// it is false for capabilities made in code.
+  bool has(List<String> path) {
+    Object? node = _json;
+    for (String part in path) {
+      if (node is! Map) return false;
+      node = node[part];
+    }
+    return node is Map;
+  }
 }
 
 /// The name and version of an MCP client, from
@@ -118,7 +187,44 @@ class McpContent {
 
 /// The result of a tool call.
 class McpToolResult {
-  const McpToolResult(this.content, {this.isError = false, this.structured});
+  const McpToolResult(this.content, {this.isError = false, this.structured})
+    : inputs = const <McpInput<Object?>>[];
+
+  McpToolResult._inputRequired(this.inputs)
+    : content = <McpContent>[
+        McpContent.text(
+          'This tool needs to ask the user a question. That needs MCP '
+          'protocol 2026-07-28. Update the MCP client and try again.',
+        ),
+      ],
+      isError = true,
+      structured = null;
+
+  /// Ask the user for [inputs], then the client calls the tool again
+  /// with the answers. Read them with [McpContext.answer].
+  ///
+  /// Only clients of protocol 2026-07-28 can answer. An older client
+  /// gets an error result that says so.
+  ///
+  /// Throws an [ArgumentError] when [inputs] is empty, or when two
+  /// inputs are the same request.
+  factory McpToolResult.inputRequired(List<McpInput<Object?>> inputs) {
+    if (inputs.isEmpty) {
+      throw ArgumentError.value(inputs, 'inputs', 'needs at least one input');
+    }
+    Set<String> keys = <String>{};
+    for (McpInput<Object?> input in inputs) {
+      if (!keys.add(input._key)) {
+        throw ArgumentError(
+          'McpToolResult.inputRequired: two inputs ask the same thing. '
+          'Give each one its own message.',
+        );
+      }
+    }
+    return McpToolResult._inputRequired(
+      List<McpInput<Object?>>.unmodifiable(inputs),
+    );
+  }
 
   /// One text item.
   factory McpToolResult.text(String text) {
@@ -160,6 +266,10 @@ class McpToolResult {
 
   /// `structuredContent`, for tools with an output schema.
   final Map<String, dynamic>? structured;
+
+  /// What the tool asks the user. Empty for a normal result. See
+  /// [McpToolResult.inputRequired].
+  final List<McpInput<Object?>> inputs;
 
   /// The result as MCP sends it.
   Map<String, dynamic> toJson() {

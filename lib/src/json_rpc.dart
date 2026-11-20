@@ -23,6 +23,11 @@ class JsonRpcCode {
   /// match the body.
   static const int headerMismatch = -32020;
 
+  /// Protocol 2026-07-28: the request needs a client capability that the
+  /// client did not send, like `elicitation`. `data.requiredCapabilities`
+  /// says which one.
+  static const int missingRequiredClientCapability = -32021;
+
   /// Protocol 2026-07-28: the server does not speak the protocol version
   /// of the request. `data.supported` lists the ones it speaks.
   static const int unsupportedProtocolVersion = -32022;
