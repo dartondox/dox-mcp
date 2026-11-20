@@ -2,21 +2,34 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for the [Dox](https://dartondox.dev) framework.
 
-It serves tools to MCP clients (Claude, ChatGPT, IDE agents) over the Streamable HTTP transport, from a normal Dox route.
+It lets AI clients like Claude, ChatGPT and IDE agents call tools in your app, from a normal Dox route.
 
-- Tool arguments are `dox_validation` schemas: clients see them as JSON Schema, and every call is checked before your code runs.
-- Session ids are signed with `APP_KEY`, so a session made on one isolate works on every isolate, and after a restart. No store is needed.
-- Replies are plain JSON. No SSE stream is needed for tools.
+- It follows the MCP standard `2026-07-28`. Each request stands alone and gets a plain JSON reply. There are no sessions and nothing is stored.
+- Tool arguments are `dox_validation` schemas. Clients see them as JSON Schema, and every call is checked before your code runs.
+- A tool can stop and ask the user a question.
+- Clients can sign in by themselves with OAuth.
+
+The full guide is on the docs site: [dartondox.dev/latest/packages/mcp](https://dartondox.dev/latest/packages/mcp/).
 
 ## Install
+
+In a Dox app, run:
+
+```bash
+dox add mcp
+```
+
+It adds the package and runs `dox mcp:install`. That command writes `lib/config/mcp.dart` with an `McpServer`, and a sample tool. It never overwrites a file.
+
+Or add only the package:
 
 ```bash
 dart pub add dox_mcp
 ```
 
-## Use
+`APP_KEY` must be set in `.env`.
 
-Write a tool:
+## Make a tool
 
 ```dart
 import 'package:dox_core/dox_core.dart';
@@ -36,7 +49,10 @@ class AddExpense extends McpTool {
   });
 
   @override
-  Future<McpToolResult> call(Map<String, dynamic> args, McpContext context) async {
+  Future<McpToolResult> call(
+    Map<String, dynamic> args,
+    McpContext context,
+  ) async {
     User user = context.authAs<User>();
     // ... save it
     return McpToolResult.text('Recorded ${args['amount']} for ${user.email}.');
@@ -44,174 +60,51 @@ class AddExpense extends McpTool {
 }
 ```
 
-Serve it on a route. Find the user first (from a token, a header or the URL), and pass it as `auth`. `scope` ties each session to that user:
+A small tool can be a function, with `McpTool.of`. A tool can also take a `@Dto` class as its input, with `McpDtoTool<T>`.
+
+Return `McpToolResult.error('...')` for an error the model can fix. If a tool throws, the client only gets `Tool failed`, and `onToolError` on the server gets the real error.
+
+## Add the route
+
+Find the user first, then pass it as `auth`. An app with users must also pass `scope`, like the user id:
 
 ```dart
 final McpServer mcp = McpServer(
   name: 'my-app',
   version: '1.0.0',
   tools: <McpTool>[AddExpense()],
+  allowedOrigins: <String>['https://my.app'],
 );
 
-Route.match(<String>['GET', 'POST', 'DELETE'], '/mcp/{token}', (DoxRequest req) async {
-  User? user = await User().where('mcp_token', req.param['token']).getFirst();
+Route.match(<String>['GET', 'POST', 'DELETE'], '/mcp', (DoxRequest req) async {
+  User? user = await findUser(req.header('authorization'));
   if (user == null) return response('Invalid token').statusCode(401);
   return mcp.handle(req, auth: user, scope: 'user:${user.id}');
 });
 ```
 
-A small tool can be a function:
-
-```dart
-McpTool.of(
-  name: 'echo',
-  description: 'Say the text back.',
-  input: v.object(<String, Schema<Object?>>{'text': v.string()}),
-  handler: (Map<String, dynamic> args, McpContext context) {
-    return McpToolResult.text(args['text'] as String);
-  },
-);
-```
-
-## Tools that take a DTO
-
-A tool can take a `@Dto` class as its input. Extend `McpDtoTool<T>`. The rules of the DTO (like `@Length` and `@HexColor`) are written once, and `handle` gets the typed object, not a map.
-
-Use `@Describe` on a field to explain it to the model. It goes into the JSON Schema as `description`. It does not change the checks.
-
-```dart
-@Dto()
-class NewCategory {
-  @Describe('The category name, like Food.')
-  @Length(min: 1, max: 50)
-  final String name;
-
-  @Describe('A color, like #1a2b3c.')
-  @HexColor()
-  final String color;
-
-  const NewCategory({required this.name, required this.color});
-
-  static const DtoSchema<NewCategory> schema = $NewCategoryDto;
-}
-
-class CreateCategory extends McpDtoTool<NewCategory> {
-  @override
-  String get name => 'create_category';
-
-  @override
-  String get description => 'Add a category.';
-
-  @override
-  DtoSchema<NewCategory> get dto => NewCategory.schema;
-
-  @override
-  Future<McpToolResult> handle(NewCategory input, McpContext context) async {
-    // ... save it
-    return McpToolResult.text('Added ${input.name}.');
-  }
-}
-```
-
-- `tools/list` sends the JSON Schema of the DTO (`toJsonSchema()`) as `inputSchema`.
-- The arguments are checked like a DTO in a controller, with async rules like `@Unique` and `@Exists` too.
-- Bad arguments are a tool result with `isError: true`, not a JSON-RPC error. The text lists each problem, so the model can fix the call:
-
-```text
-Input validation error: Invalid arguments for tool create_category: name: The name is required; color: The color must be a hex color like #1a2b3c
-```
-
-## What the server answers
-
-| Request | Answer |
-| --- | --- |
-| `POST` `initialize` | `200` with the server info and an `Mcp-Session-Id` header |
-| `POST` a request with a valid `Mcp-Session-Id` | `200` with the JSON-RPC response (a list for a batch) |
-| `POST` a batch with more than 50 messages (`McpServer.maxBatchSize`) | `400`, `-32600`. No message runs. |
-| `POST` only notifications or responses | `202`, no body |
-| `POST` with no session id | `400` |
-| `POST` with an unknown or ended session id, or one of another `scope` | `404`, so the client starts a new session |
-| `POST` with an unsupported `MCP-Protocol-Version` header | `400` |
-| `POST` with another `Content-Type` than JSON | `415` |
-| `GET` | `405`: there is no server-to-client stream |
-| `DELETE` with a session id | `200`, the session ends |
-
-Methods: `initialize`, `ping`, `tools/list`, `tools/call`. Others get `-32601 Method not found`.
-
-- An unknown tool is a JSON-RPC error (`-32602`).
-- Bad arguments are a tool result with `isError: true` and the problems, so the model can fix them.
-- A tool that throws gives a tool result with `isError: true`. The client gets `Tool failed`, unless `APP_ENV` is `development` or `local`. A tool that wants the model to see a message must return `McpToolResult.error(...)`. `onToolError` gets the full error, for logs.
-
-Protocol versions: `2026-07-28`, `2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05`. A client that sends `initialize` with another version gets `2025-11-25`.
-
-## Protocol 2026-07-28
-
-The same route serves old and new clients. Your app code does not change.
-
-- An old client sends `initialize` first and then uses a session, as in the table above.
-- A `2026-07-28` client never sends `initialize`. Each request carries its version and the client capabilities in `params._meta`. There is no session: the server ignores an `Mcp-Session-Id` header and never sends one. `auth` works the same.
-
-What a `2026-07-28` request gets:
-
-| Request | Answer |
-| --- | --- |
-| `server/discover` | `200` with `supportedVersions`, `capabilities`, `instructions` |
-| `tools/list`, `tools/call` | `200`, as before |
-| `_meta` without `io.modelcontextprotocol/protocolVersion` or `io.modelcontextprotocol/clientCapabilities` | `400`, `-32602` |
-| a version the server does not speak | `400`, `-32022`, `data.supported` lists the versions |
-| the `MCP-Protocol-Version`, `Mcp-Method` or `Mcp-Name` header is missing or does not match the body | `400`, `-32020` |
-| `ping` or another unknown method | `404`, `-32601` |
-| a batch | `400`, `-32600` |
-| a notification | `202`, no body |
-
-- Every result has `resultType: "complete"` and the server name in `_meta["io.modelcontextprotocol/serverInfo"]`.
-- `server/discover` and `tools/list` have `ttlMs: 0` and `cacheScope: "private"`, so clients do not cache them.
-- `Mcp-Name` may come as `=?base64?...?=`. The server decodes it before it compares.
-- In a tool, `context.sessionId` is `''`. `context.clientCapabilities` and `context.clientInfo` say what the client sent. They are null for old clients.
-- Not supported yet: SSE replies, `subscriptions/listen` and `Mcp-Param-*` headers. Input requests (MRTR) work for `tools/call`, see [Ask the user during a tool](#ask-the-user-during-a-tool).
+`allowedOrigins` stops web pages on other sites from calling the server in a browser.
 
 ## Ask the user during a tool
 
-A tool can stop and ask the user a question, like "Delete this expense?". The client shows the question, then calls the tool again with the answer. This needs a `2026-07-28` client. The server keeps nothing between the two calls.
-
-Make the question once, in a `static final` field. The same object asks and reads the answer:
+A tool can ask a question, like "Delete this expense?". The client shows it, then calls the tool again with the answer:
 
 ```dart
-class DeleteExpense extends McpTool {
-  static final McpInput<bool> confirmDelete = McpInput.confirm(
-    'Delete this expense?',
-  );
+static final McpInput<bool> confirmDelete = McpInput.confirm(
+  'Delete this expense?',
+);
 
-  // name, description, input ...
-
-  @override
-  Future<McpToolResult> call(
-    Map<String, dynamic> args,
-    McpContext context,
-  ) async {
-    McpAnswer<bool>? answer = context.answer(confirmDelete);
-    if (answer == null) {
-      return McpToolResult.inputRequired(<McpInput<Object?>>[confirmDelete]);
-    }
-    return switch (answer) {
-      McpAccepted<bool>(value: true) => _delete(args),
-      McpAccepted<bool>() ||
-      McpDeclined<bool>() ||
-      McpCancelled<bool>() => McpToolResult.text('Cancelled'),
-    };
-  }
+McpAnswer<bool>? answer = context.answer(confirmDelete);
+if (answer == null) {
+  return McpToolResult.inputRequired(<McpInput<Object?>>[confirmDelete]);
 }
+return switch (answer) {
+  McpAccepted<bool>(value: true) => _delete(args),
+  McpAccepted<bool>() ||
+  McpDeclined<bool>() ||
+  McpCancelled<bool>() => McpToolResult.text('Cancelled'),
+};
 ```
-
-`context.answer` gives null when there is no answer yet. It also gives null when the answer is bad (a wrong type, or a form that fails the DTO rules). Then the tool asks again. It works the same in `McpDtoTool.handle`.
-
-The answer is one of:
-
-- `McpAccepted<T>(value)`: the user answered.
-- `McpDeclined`: the user said no.
-- `McpCancelled`: the user closed the question.
-
-The kinds of input:
 
 | Input | Answer |
 | --- | --- |
@@ -219,177 +112,42 @@ The kinds of input:
 | `McpInput.text(message)` | `String` |
 | `McpInput.number(message)` | `num` |
 | `McpInput.choice(message, Color.values)` | the enum value |
-| `McpInput.form(message, NewExpense.schema)` | the `@Dto` object, checked by its rules |
-| `McpInput.url(message, url)` | nothing. `McpAccepted` only means the user agreed to open the page |
+| `McpInput.form(message, NewExpense.schema)` | the `@Dto` object (flat fields only, no async rules) |
+| `McpInput.url(message, url)` | nothing: the user agreed to open the page |
 
-- An MCP form only has flat fields: text, numbers, booleans, enums and lists of enum values. `McpInput.form` throws an `ArgumentError` for a DTO with a nested object or list. It also throws for a DTO with async rules like `@Unique`, because the answer is read without `await`. Check those in the tool.
-- Never ask for a password or a key in a form. Use `McpInput.url` and a page of your app for that. Never put a secret or a signed-in link in the URL.
-- Ask for many things at once with a longer list. Two inputs that ask the same thing throw an `ArgumentError`. Answers of earlier rounds are kept, so a tool can also ask one question per round.
-- The server only asks what the client said it can answer (`elicitation`, with its `form` or `url` mode). Else the call gets `400` with `-32021` and `data.requiredCapabilities`.
-- An old client (`2025-11-25` and before) cannot answer. It gets an error result that says the client must speak `2026-07-28`.
-
-How the server keeps it safe. The server sends a `requestState` with the question, and the client sends it back with the answer. It is signed with HMAC-SHA256 (a key from `APP_KEY`, label `dox:mcp-state`). It only works for the same `scope`, the same tool, the same arguments, and for 5 minutes. A changed, old or wrong state gets `-32602`. Answers without a valid state are not read.
-
-Apps with users MUST pass `scope` to `handle` (like the user id). The scope ties both the sessions and the question state to that user. Without it, one user can send another user's state (same tool and arguments) until it expires.
-
-Change the time or the key on the server:
-
-```dart
-McpServer(
-  name: 'my-app',
-  version: '1.0.0',
-  tools: tools,
-  requestStateTtl: const Duration(minutes: 10),
-  requestStateKey: myKey, // default: from APP_KEY
-);
-```
-
-A state can be sent again until it expires. A tool that must run only once (like a payment) must check that itself, for example with a row in the database.
-
-For an input kind this package does not have yet, extend `McpCustomInput<T>`. Give the `method`, the `capability` path it needs (like `<String>['sampling']`), `toJson()` (the `params`) and `parse(result)`. This is the only place with a raw map. When `parse` throws, the tool asks again.
-
-```dart
-class AskModel extends McpCustomInput<String> {
-  @override
-  String get method => 'sampling/createMessage';
-
-  @override
-  List<String> get capability => <String>['sampling'];
-
-  @override
-  Map<String, Object?> toJson() {
-    return <String, Object?>{
-      'messages': <Object?>[
-        <String, Object?>{
-          'role': 'user',
-          'content': <String, Object?>{'type': 'text', 'text': 'Hi?'},
-        },
-      ],
-      'maxTokens': 100,
-    };
-  }
-
-  @override
-  String parse(Map<String, Object?> result) {
-    Map<String, Object?> content = result['content']! as Map<String, Object?>;
-    return content['text']! as String;
-  }
-}
-```
-
-## Sessions
-
-`SignedMcpSessions` (the default) makes ids like `<random>.<signature>`. The signature is HMAC-SHA256 of the random part and the `scope`, with a key made from `APP_KEY` (label `dox:mcp`).
-
-- Every isolate, and every server with the same `APP_KEY`, can check an id. Nothing is stored.
-- A new `APP_KEY` ends every session. Clients start a new one by themselves.
-- A signed id cannot be ended by itself. To refuse ended ids, give a cache store: `SignedMcpSessions(ended: Cache().store('redis'))`. Use a store that all isolates share (file or Redis, not memory).
-
-For another kind of session, implement `McpSessions`.
+The answers are signed and expire after 5 minutes (`requestStateTtl`). For a kind of input that is not in the table, extend `McpCustomInput<T>`.
 
 ## OAuth sign-in
 
-`McpOAuth` lets a client sign in by itself. You give the client only the address, like `https://my.app/mcp`. This is the sign-in of the MCP spec (OAuth 2.1 with PKCE).
-
-`dox_mcp` does the OAuth part. Your app does three things:
-
-1. **Tokens.** Implement `McpOAuthTokens`: `issue` makes a token for a grant, `verify` gives what a token stands for (like the user id), or null. You choose the table and how a token is revoked. Keep only a hash of it.
-2. **The consent page.** At `<issuer>/oauth/authorize` (or `authorizePage:`). It reads `client_id`, `redirect_uri`, `state`, `code_challenge`, `code_challenge_method` and `resource` from the query. The person signs in there the way your app always does.
-3. **The yes.** Your page calls your own route, with your own login. That route calls `oauth.approve(subject: ...)` and gives the page the address to send the browser to. On no, `await oauth.denyClient(...)`. `await oauth.verifyClient(clientId, redirectUri)` gives the client's name for the page. Use these async methods: they know both kinds of clients (see below). The old `checkClient` and `deny` also know both kinds of clients. They are not async, so they can not wait for a client metadata document. If the document is not in memory, they start the load and throw `invalid_client`. A new try a moment later works. Use the async methods in new code.
-
-On the consent page:
-
-- Show the host of `redirect_uri`, so the person sees where they are sent.
-- HTML-escape the client name. The client chooses it, so it can hold any text.
+With `McpOAuth`, you give the client only the address, like `https://my.app/mcp`. The client signs the user in by itself. Your app makes the tokens (`McpOAuthTokens`) and shows the consent page.
 
 ```dart
 final McpOAuth oauth = McpOAuth(
   issuer: 'https://my.app',
-  tokens: MyTokens(),
-  codes: Cache().store('file'), // shared by the isolates
+  tokens: McpTokens(),
+  codes: Cache().store('redis'), // all isolates must share it
 );
 
 class McpRouter extends Router {
   @override
   void register() {
-    oauth.routes(); // discovery, register, token
+    oauth.routes();
     Route.match(<String>['GET', 'POST', 'DELETE'], '/mcp', handleMcp);
   }
 }
 
 Future<DoxResponse> handleMcp(DoxRequest req) async {
-  Object? user = await oauth.authenticate(req); // Authorization: Bearer
-  if (user == null) return oauth.unauthorized(); // 401 + WWW-Authenticate
+  Object? user = await oauth.authenticate(req);
+  if (user == null) return oauth.unauthorized();
   return mcp.handle(req, auth: user, scope: '$user');
 }
 ```
 
-### How a client gets a `client_id`
+A client names itself with a client metadata document: its `client_id` is an `https` address of a JSON file. `dox_mcp` loads and checks the file. `allowedClientHosts` (accept these hosts only), `maxClientFetches` (how many files one isolate loads at the same time) and `maxClientFetchesPerHost` limit the loads. On the consent page, use `await oauth.verifyClient(...)` and show `client.host` next to the client name.
 
-There are two ways. Both work at the same time.
+See the [full guide](https://dartondox.dev/latest/packages/mcp/#signing-in-with-oauth) for the tokens and the consent page.
 
-- **New clients: a client metadata document.** The MCP spec (`2026-07-28`) asks for this. The `client_id` is an `https` address, like `https://claude.ai/oauth/mcp-oauth-client-metadata`. A JSON file at that address holds the client's name and redirect addresses. `dox_mcp` loads the file when it sees the `client_id`. The discovery file says `client_id_metadata_document_supported: true`.
-- **Older clients: `POST /oauth/register`.** The spec now calls this old (deprecated), but many clients still use it, so it stays. Nothing is stored: the `client_id` is signed.
+## Details
 
-The document must have `client_id` (the same address, letter for letter), `client_name` and `redirect_uris`. It must not have a client secret, and it must allow the auth method `none`. A broken or missing document gives `invalid_client`. The client never sees the inside error.
-
-For an `http` loopback redirect address (`localhost`, `127.0.0.1`, `[::1]`) of a document client, the port may differ (RFC 8252). Native apps like Claude Code get a random port. All other addresses must match exactly.
-
-Loading the document is safe by default:
-
-- Only `https`, with a path, and no user name, password or `#fragment` in the address.
-- The host must be a public address. Inside addresses (loopback, private, link-local, CGNAT, multicast and others) are refused. The server connects to the address it checked, so a second DNS answer can not change it.
-- No redirects. 3 seconds to connect, 5 seconds in all. At most 5 KB. The answer must be JSON.
-- Each isolate keeps a document in memory for its `Cache-Control: max-age`, at most `clientCacheMaxAge` (5 minutes). With no `max-age`, 1 minute. With `no-store`, it is not kept.
-- When the host gives no answer to a new load (a timeout, no connection, or a `5xx` status), the old document stays in use for 1 more hour (`McpOAuth.clientStaleAge`). A real answer (like `404`, or a changed document) replaces the old document at once.
-- When all slots are busy, the old document stays in use for 5 more minutes (`McpOAuth.clientBusyStaleAge`).
-- A document with `no-store`, `no-cache` or `max-age=0` is kept for 1 minute only for `checkClient` and `deny` (`McpOAuth.clientHandOffAge`), so a consent page that uses them works.
-- A failure is kept for 1 minute (`McpOAuth.clientFailureAge`). In that time, the server does not load the address again. If the host itself fails (not found, no connection, no answer in time), the server does not load any address on that host and port for 1 minute.
-
-To accept only some clients, list their hosts. By default (`null`), any public host works:
-
-```dart
-McpOAuth(
-  issuer: 'https://my.app',
-  tokens: MyTokens(),
-  allowedClientHosts: <String>{'claude.ai'},
-);
-```
-
-Three options stop abuse of the document loads:
-
-- `allowedClientHosts`: load documents only from these hosts.
-- `maxClientFetches` (default 8): how many documents each isolate loads at the same time. When all are busy, a new address gets `invalid_client` at once. It does not wait. A known client gets its old document.
-- `maxClientFetchesPerHost` (default 2): how many of these loads can go to one host and port. One slow host can not use all the slots.
-- `McpOAuthHttpFetcher(maxFetchesPerAddress:)` (default 2): how many loads can go to one IP address. Many host names on one slow server can not use all the slots.
-
-On the consent page, also show `client.host` next to the name. It is the host of a document `client_id`, like `claude.ai`, and null for a signed client. The client chooses its own name, so the host is the part the person can trust.
-
-```dart
-McpOAuthClient client = await oauth.verifyClient(clientId, redirectUri);
-String from = client.host == null ? '' : ' (${client.host})';
-// HTML-escape both
-String title = 'Allow ${client.name}$from to use your account?';
-```
-
-| Route | What it does |
-| --- | --- |
-| `GET /.well-known/oauth-protected-resource` (also with `/mcp` after it) | Names the MCP address and the issuer (RFC 9728). |
-| `GET /.well-known/oauth-authorization-server` | The endpoints (RFC 8414). PKCE `S256` only, `authorization_code` only, no client secret. |
-| `POST /oauth/register` | Dynamic client registration (RFC 7591), for older clients. Nothing is stored: the `client_id` is the name and redirect addresses, signed with `APP_KEY` (label `dox:mcp-oauth`). |
-| `POST /oauth/token` | Swaps a code for a token. Form or JSON body. The code works once and for `codeTtl` (1 minute). The client, the redirect address and the PKCE verifier must match. Answers `no-store`. An unknown `client_id` gets `401` with `invalid_client`. |
-
-Rules:
-
-- A redirect address must be `https`, or `http` on `localhost`, `127.0.0.1` or `[::1]`. No `#fragment`. At most 2048 characters (`McpOAuth.maxRedirectUriLength`).
-- A `code_verifier` must be 43 to 128 characters of `A-Z a-z 0-9 - . _ ~` (RFC 7636). Other verifiers get `invalid_request`. A `code_challenge` must be 43 base64url characters.
-- The codes live in `codes`, a Dox cache. Use a store that all isolates share (file on one host, Redis on many). Each code is taken under a lock, so two isolates cannot both swap it.
-- The public routes answer any origin (CORS `*`) and read no cookie. They skip the app's CORS list.
-- `issue` may throw `McpOAuthException` (like `access_denied` for too many clients). The client gets it from the token endpoint.
-- There is no refresh token. The app revokes a client by deleting its token.
-
-## Security
-
-- Check who calls before `handle`: the MCP route has no auth of its own. `McpOAuth` is one way.
-- `allowedOrigins` stops browser pages on other sites (DNS rebinding). Set it when the server runs on a local or private network.
-- Keep tokens out of logs. A token in the URL ends up in proxy logs, so prefer a header when your clients can send one.
+- The server has tools only. It has no MCP resources, prompts or streams.
+- Older clients (MCP `2025-11-25` and before) still work on the same route, with no change in your app.
