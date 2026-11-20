@@ -40,8 +40,8 @@ class McpInstallCommand extends Command {
     installer.writeFile('lib/config/mcp.dart', config(app));
 
     installer.printSummary(<String>[
-      'Check that APP_KEY is set in .env (`dox key:generate`). MCP sessions '
-          'are signed with it.',
+      'Check that APP_KEY is set in .env (`dox key:generate`). The MCP '
+          'server signs data with it.',
       'Mount `mcp` on a route behind your own auth. Find the user first, '
           r"then call `mcp.handle(req, auth: user, scope: 'user:${user.id}')`. "
           'See the MCP docs.',

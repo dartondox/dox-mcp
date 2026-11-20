@@ -1,8 +1,8 @@
 /// Model Context Protocol (MCP) server for the Dox framework.
 ///
-/// Tools over the Streamable HTTP transport, with arguments checked by
-/// `dox_validation` schemas, and signed session ids that work on every
-/// isolate.
+/// Tools over the Streamable HTTP transport of MCP 2026-07-28, with
+/// arguments checked by `dox_validation` schemas. Each request stands
+/// alone, so every isolate can answer it and nothing is stored.
 ///
 /// ```dart
 /// import 'package:dox_core/dox_core.dart';
