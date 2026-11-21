@@ -1,4 +1,4 @@
-## Unreleased
+## 3.2.2
 
 - New: support for MCP protocol `2026-07-28`, next to the older versions on the same route. App code does not change. A `2026-07-28` request carries its version in `_meta` and needs no `initialize` and no session. The server answers `server/discover`, checks the `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` headers against the body, and adds `resultType` and the server info to each result. Old clients that send `initialize` work the same as before.
 - New: `McpContext.clientCapabilities` and `McpContext.clientInfo`, sent by `2026-07-28` clients. Null for older clients. `McpContext.sessionId` is `''` for `2026-07-28` clients.
