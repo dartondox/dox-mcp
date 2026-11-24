@@ -1,4 +1,4 @@
-## Unreleased
+## 3.2.3
 
 - Faster: `McpOAuthHttpFetcher` loads a client metadata document through the native client of [dox_http_client](https://pub.dev/packages/dox_http_client). The guards against SSRF do not change: the fetcher checks every address of the host and connects only to the checked address.
 - Change: `connectTimeout` of `McpOAuthHttpFetcher` is now the limit for the lookup of the host only. `timeout` is the limit for the connection and for the answer.
