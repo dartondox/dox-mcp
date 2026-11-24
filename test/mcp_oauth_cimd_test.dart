@@ -360,10 +360,20 @@ void main() {
       ]) {
         await expectLater(
           real.fetch(Uri.parse(url)),
-          throwsA(isA<McpOAuthFetchException>()),
+          throwsA(
+            isA<McpOAuthFetchException>().having(
+              (McpOAuthFetchException e) => e.message,
+              'message',
+              url.startsWith('https')
+                  ? 'The host is not a public address'
+                  : 'Only https is fetched',
+            ),
+          ),
           reason: url,
         );
       }
+      // every refused load gave its slot back
+      expect(McpOAuthHttpFetcher.addressSlots.loads('127.0.0.1'), 0);
     });
 
     test('readLimited stops past the limit', () async {
