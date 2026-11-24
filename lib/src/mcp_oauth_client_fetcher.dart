@@ -107,9 +107,12 @@ class McpOAuthHttpFetcher extends McpOAuthClientFetcher {
     }
     _Connection connection = _Connection(this);
     DoxHttpClient client = DoxHttpClient(
-      timeout: timeout,
+      // 0 is "no limit" for the client, but not for the fetcher
+      timeout: timeout > Duration.zero
+          ? timeout
+          : const Duration(milliseconds: 1),
       followRedirects: false,
-      maxResponseSize: maxBytes,
+      maxResponseSize: maxBytes < 1 ? 1 : maxBytes,
       lookup: connection.lookup,
     );
     try {
@@ -150,7 +153,7 @@ class McpOAuthHttpFetcher extends McpOAuthClientFetcher {
       };
     } finally {
       client.close();
-      connection.release();
+      connection.end();
     }
   }
 
@@ -253,6 +256,7 @@ class _Connection {
 
   final McpOAuthHttpFetcher fetcher;
   String? _address;
+  bool _done = false;
 
   /// Why [lookup] refused the host, or null.
   McpOAuthFetchException? refused;
@@ -264,7 +268,7 @@ class _Connection {
     try {
       return await _lookup(host);
     } on McpOAuthFetchException catch (error) {
-      refused = error;
+      if (!_done) refused = error;
       rethrow;
     }
   }
@@ -279,6 +283,11 @@ class _Connection {
         'The host was not found',
         hostFailed: true,
       );
+    }
+    // the load ended while the lookup ran (a timeout): take no slot,
+    // nobody would give it back
+    if (_done) {
+      throw const McpOAuthFetchException('Timed out', hostFailed: true);
     }
     if (found.isEmpty || !found.every(McpOAuthHttpFetcher.isPublicAddress)) {
       throw const McpOAuthFetchException(
@@ -298,6 +307,13 @@ class _Connection {
       _address = address;
     }
     return <InternetAddress>[found.first];
+  }
+
+  /// Ends the load: gives back the slot, once. A lookup that is still
+  /// running takes no slot after it.
+  void end() {
+    _done = true;
+    release();
   }
 
   /// Gives back the slot, once.
