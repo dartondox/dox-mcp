@@ -1,7 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+
+import 'package:dox_http_client/dox_http_client.dart';
 
 /// What a [McpOAuthClientFetcher] got back for a client metadata document.
 class McpOAuthFetchedDocument {
@@ -63,7 +64,8 @@ abstract class McpOAuthClientFetcher {
   Future<McpOAuthFetchedDocument> fetch(Uri url);
 }
 
-/// The default [McpOAuthClientFetcher]. It uses `dart:io` and guards the
+/// The default [McpOAuthClientFetcher]. It uses the native client of
+/// `dox_http_client` and guards the
 /// server against SSRF (a client that makes the server call an inside
 /// address):
 ///
@@ -72,7 +74,7 @@ abstract class McpOAuthClientFetcher {
 ///   checked address, so a second DNS answer cannot point it somewhere
 ///   else. TLS still checks the certificate of the host name.
 /// - No proxy, no redirects, no cookies.
-/// - [connectTimeout] for the connection, [timeout] for all of it.
+/// - [connectTimeout] for the lookup of the host, [timeout] for all of it.
 /// - It reads at most [maxBytes] of the body. A bigger body is an error.
 /// - At most [maxFetchesPerAddress] loads go to one IP address at the same
 ///   time (per isolate). So many host names on one slow server can not take
@@ -104,43 +106,53 @@ class McpOAuthHttpFetcher extends McpOAuthClientFetcher {
       throw const McpOAuthFetchException('Only https is fetched');
     }
     _Connection connection = _Connection(this);
-    HttpClient client = HttpClient()
-      ..connectionTimeout = connectTimeout
-      ..findProxy = _direct
-      ..connectionFactory = connection.connect;
+    DoxHttpClient client = DoxHttpClient(
+      timeout: timeout,
+      followRedirects: false,
+      maxResponseSize: maxBytes,
+      lookup: connection.lookup,
+    );
     try {
-      return await _get(client, url).timeout(timeout);
-    } on TimeoutException {
-      throw const McpOAuthFetchException('Timed out', hostFailed: true);
-    } on SocketException {
-      throw const McpOAuthFetchException('No connection', hostFailed: true);
-    } on TlsException {
-      throw const McpOAuthFetchException('TLS failed', hostFailed: true);
+      // the client asks no lookup for an IP address: check it here
+      if (InternetAddress.tryParse(url.host) != null) {
+        await connection.lookup(url.host);
+      }
+      DoxHttpClientResponse response = await client.get(
+        url,
+        headers: const <String, String>{'accept': 'application/json'},
+      );
+      if (response.bodyBytes.length > maxBytes) {
+        throw const McpOAuthFetchException('The body is too big');
+      }
+      return McpOAuthFetchedDocument(
+        statusCode: response.statusCode,
+        body: response.body,
+        contentType: response.header('content-type'),
+        cacheControl: response.header('cache-control'),
+      );
+    } on DoxHttpClientException catch (error) {
+      // the lookup refused the host: its own exception says why
+      McpOAuthFetchException? refused = connection.refused;
+      if (refused != null) throw refused;
+      throw switch (error.failure) {
+        DoxHttpFailure.responseTooBig => const McpOAuthFetchException(
+          'The body is too big',
+        ),
+        DoxHttpFailure.timeout => const McpOAuthFetchException(
+          'Timed out',
+          hostFailed: true,
+        ),
+        DoxHttpFailure.tlsFailed => const McpOAuthFetchException(
+          'TLS failed',
+          hostFailed: true,
+        ),
+        _ => const McpOAuthFetchException('No connection', hostFailed: true),
+      };
     } finally {
-      client.close(force: true);
+      client.close();
       connection.release();
     }
   }
-
-  Future<McpOAuthFetchedDocument> _get(HttpClient client, Uri url) async {
-    HttpClientRequest request = await client.getUrl(url);
-    request.followRedirects = false;
-    request.persistentConnection = false;
-    request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-    HttpClientResponse response = await request.close();
-    if (response.contentLength > maxBytes) {
-      throw const McpOAuthFetchException('The body is too big');
-    }
-    Uint8List bytes = await readLimited(response, maxBytes);
-    return McpOAuthFetchedDocument(
-      statusCode: response.statusCode,
-      body: utf8.decode(bytes, allowMalformed: true),
-      contentType: response.headers.value(HttpHeaders.contentTypeHeader),
-      cacheControl: response.headers.value(HttpHeaders.cacheControlHeader),
-    );
-  }
-
-  static String _direct(Uri url) => 'DIRECT';
 
   /// Reads [stream] into bytes. Throws when it has more than [maxBytes].
   /// It stops reading at once then.
@@ -242,16 +254,25 @@ class _Connection {
   final McpOAuthHttpFetcher fetcher;
   String? _address;
 
-  /// Looks up the host, checks every address, takes a slot, then connects
-  /// to the first address.
-  Future<ConnectionTask<Socket>> connect(
-    Uri url,
-    String? proxyHost,
-    int? proxyPort,
-  ) async {
+  /// Why [lookup] refused the host, or null.
+  McpOAuthFetchException? refused;
+
+  /// Looks up [host], checks every address and takes a slot. It gives only
+  /// the first address, so the client connects to the checked address and
+  /// to no other.
+  Future<List<InternetAddress>> lookup(String host) async {
+    try {
+      return await _lookup(host);
+    } on McpOAuthFetchException catch (error) {
+      refused = error;
+      rethrow;
+    }
+  }
+
+  Future<List<InternetAddress>> _lookup(String host) async {
     List<InternetAddress> found;
     try {
-      found = await InternetAddress.lookup(url.host)
+      found = await InternetAddress.lookup(host)
           .timeout(fetcher.connectTimeout);
     } on Object {
       throw const McpOAuthFetchException(
@@ -276,9 +297,7 @@ class _Connection {
       release();
       _address = address;
     }
-    // the address keeps the host name, so TLS sends it (SNI) and checks
-    // the certificate for it
-    return SecureSocket.startConnect(found.first, url.port);
+    return <InternetAddress>[found.first];
   }
 
   /// Gives back the slot, once.
